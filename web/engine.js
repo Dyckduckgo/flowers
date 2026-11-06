@@ -145,12 +145,14 @@ FY.Screen = class Screen {
     this.h = h;
     this.ch = new Int32Array(w * h).fill(SPACE);
     this.fg = new Int32Array(w * h);
+    this.bg = new Int32Array(w * h);                            // paper behind a cell (0 = none)
   }
   clear() {
     this.ch.fill(SPACE);
     this.fg.fill(0);
+    this.bg.fill(0);
   }
-  put(x, y, text, fg) {
+  put(x, y, text, fg, bg) {
     if (y < 0 || y >= this.h || x < 0 || x >= this.w) return;
     const chars = Array.from(text);
     const n = Math.min(chars.length, this.w - x);
@@ -158,10 +160,19 @@ FY.Screen = class Screen {
     for (let i = 0; i < n; i++) {
       this.ch[at + i] = chars[i].codePointAt(0);
       this.fg[at + i] = typeof fg === "number" ? fg : fg[i];
+      if (bg !== undefined) this.bg[at + i] = bg;
+    }
+  }
+  fill(x, y, w, bg) {
+    if (y < 0 || y >= this.h) return;
+    for (let i = Math.max(0, x); i < Math.min(this.w, x + w); i++) {
+      this.ch[y * this.w + i] = SPACE;
+      this.bg[y * this.w + i] = bg;
     }
   }
   free(x, y) {
-    return x >= 0 && x < this.w && y >= 0 && y < this.h && this.ch[y * this.w + x] === SPACE;
+    const i = y * this.w + x;
+    return x >= 0 && x < this.w && y >= 0 && y < this.h && this.ch[i] === SPACE && !this.bg[i];
   }
 };
 
@@ -172,6 +183,18 @@ FY.Screen = class Screen {
 const FONT = 'Consolas, "Cascadia Mono", Menlo, "SF Mono", "DejaVu Sans Mono", "Roboto Mono", ' +
   '"Noto Sans Mono", "Liberation Mono", "Courier New", monospace';
 const AS_TEXT = new Set([0x2665, 0x266a, 0x266b, 0x2022]);   // never as emoji
+const line = (h) => Math.max(1, Math.round(h));
+const BLOCKS = {                                              // [x, y, w, h] inside a w x h cell
+  0x2580: (w, h) => [0, 0, w, h / 2],                         // ▀
+  0x2584: (w, h) => [0, h / 2, w, h / 2],                     // ▄
+  0x2588: (w, h) => [0, 0, w, h],                             // █
+  0x258c: (w, h) => [0, 0, w / 2, h],                         // ▌
+  0x2590: (w, h) => [w / 2, 0, w / 2, h],                     // ▐
+  0x2500: (w, h) => [0, Math.round(h / 2 - line(h * 0.06) / 2), w, line(h * 0.06)],   // ─
+  0x2501: (w, h) => [0, Math.round(h / 2 - line(h * 0.13) / 2), w, line(h * 0.13)],   // ━
+  0x2502: (w, h) => [Math.round(w / 2 - line(w * 0.12) / 2), 0, line(w * 0.12), h],   // │
+  0x25a0: (w, h) => [w * 0.15, h * 0.32, w * 0.7, w * 0.7],    // ■
+};
 
 FY.Renderer = class Renderer {
   constructor(canvas) {
@@ -181,7 +204,15 @@ FY.Renderer = class Renderer {
     this.actx = this.atlas.getContext("2d");
     this.tint = document.createElement("canvas");
     this.tctx = this.tint.getContext("2d");
+    this.paper = document.createElement("canvas");
+    this.pctx = this.paper.getContext("2d");
     this.cols = this.rows = this.cw = 0;
+  }
+
+  /** client (css px) coordinates -> [column, row] of the grid. */
+  cellAt(clientX, clientY) {
+    const r = this.canvas.getBoundingClientRect();
+    return [Math.floor(((clientX - r.left) / r.width) * this.cols), Math.floor(((clientY - r.top) / r.height) * this.rows)];
   }
 
   /** pick the cell size for this window. returns true when the grid changed. */
@@ -214,9 +245,10 @@ FY.Renderer = class Renderer {
     this.atlas.width = 32 * cw;
     this.atlas.height = 8 * chh;
     this.slots = new Map();
-    this.tint.width = cols;
-    this.tint.height = rows;
+    this.tint.width = this.paper.width = cols;
+    this.tint.height = this.paper.height = rows;
     this.paint = this.tctx.createImageData(cols, rows);
+    this.paperImg = this.pctx.createImageData(cols, rows);
     return true;
   }
 
@@ -228,6 +260,14 @@ FY.Renderer = class Renderer {
     const { cw, chh } = this;
     const x = (s % 32) * cw, y = Math.floor(s / 32) * chh;
     const a = this.actx;
+    const block = BLOCKS[code];
+    if (block) {                                                // blocks and rules: exact, so they join up
+      a.fillStyle = "#fff";
+      const [bx, by, bw, bh] = block(cw, chh);
+      a.fillRect(x + bx, y + by, bw, bh);
+      this.slots.set(code, s);
+      return s;
+    }
     a.save();
     a.beginPath();
     a.rect(x, y, cw, chh);
@@ -272,6 +312,26 @@ FY.Renderer = class Renderer {
     ctx.globalCompositeOperation = "source-in";
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(this.tint, 0, 0, cols, rows, 0, 0, W, H);
+    // paper: cells with a background colour, slid in behind the glyphs
+    const pp = this.paperImg.data, bg = scr.bg;
+    let any = false;
+    for (let i = 0; i < bg.length; i++) {
+      const b = bg[i], o = i * 4;
+      if (!b) {
+        pp[o + 3] = 0;
+        continue;
+      }
+      any = true;
+      pp[o] = (b >> 16) & 255;
+      pp[o + 1] = (b >> 8) & 255;
+      pp[o + 2] = b & 255;
+      pp[o + 3] = 255;
+    }
+    if (any) {
+      this.pctx.putImageData(this.paperImg, 0, 0);
+      ctx.globalCompositeOperation = "destination-over";
+      ctx.drawImage(this.paper, 0, 0, cols, rows, 0, 0, W, H);
+    }
     ctx.globalCompositeOperation = "source-over";
   }
 };
@@ -315,7 +375,7 @@ FY.Stars = class Stars {
       const step = Math.round((0.5 + 0.5 * Math.sin(this.speed[i] * t + this.phase[i])) * 6);
       if (step < 3) continue;
       const x = this.x[i] + x0, y = this.y[i] + y0, at = y * scr.w + x;
-      if (scr.ch[at] !== SPACE) continue;
+      if (scr.ch[at] !== SPACE || scr.bg[at]) continue;
       scr.ch[at] = step === 6 ? 42 : step === 5 ? 43 : 46;      // * + .
       scr.fg[at] = this.colour[i * 7 + step];
       if (this.glint[i] && step === 6) cross.push(i);
@@ -324,7 +384,7 @@ FY.Stars = class Stars {
       const x = this.x[i] + x0, y = this.y[i] + y0;
       for (const [dx, dy, c] of [[-1, 0, 45], [1, 0, 45], [0, -1, 124], [0, 1, 124]]) {
         const xx = x + dx, yy = y + dy;
-        if (xx >= x0 && xx < x0 + w && yy >= y0 && yy < y0 + h && scr.ch[yy * scr.w + xx] === SPACE) {
+        if (xx >= x0 && xx < x0 + w && yy >= y0 && yy < y0 + h && scr.free(xx, yy)) {
           scr.ch[yy * scr.w + xx] = c;
           scr.fg[yy * scr.w + xx] = this.arm[i];
         }
@@ -483,5 +543,430 @@ FY.Ink = class Ink {
       pop = d8[0] >= 0 ? this.graphic * FY.clip((pop / Math.max(total, 1e-3)) * 2, 0, 1) : 0;
       fg[c] = glow(wr / ws, wg / ws, wb / ws, pop);
     }
+  }
+};
+
+// ── colours and little text helpers the scenes share ────────────────────────
+const rgb = (FY.rgb = (r, g, b) => (r << 16) | (g << 8) | b);
+FY.C = {
+  TEXT: rgb(206, 206, 214), KEYWORD: rgb(255, 95, 140), FUNC: rgb(255, 186, 112), STRING: rgb(150, 214, 160),
+  NUMBER: rgb(186, 152, 255), COMMENT: rgb(104, 104, 118), OP: rgb(150, 150, 162), NAME: rgb(120, 196, 255),
+  LINENO: rgb(72, 72, 84), HILITE: rgb(46, 10, 22), BAR: rgb(255, 70, 122), HUD: rgb(150, 150, 162),
+  PINK: rgb(255, 92, 138), RULE: rgb(30, 30, 38), STATUS: rgb(196, 196, 204),
+};
+// the edit's colours: hot pink, rose, blush, a little mist, and a deep wine for things barely there
+FY.HOT = [1, 64 / 255, 129 / 255];
+FY.ROSE = [236 / 255, 92 / 255, 140 / 255];
+FY.BLUSH = [1, 196 / 255, 214 / 255];
+FY.MIST = [236 / 255, 220 / 255, 228 / 255];
+FY.WINE = [110 / 255, 24 / 255, 60 / 255];
+FY.CYAN = [90 / 255, 230 / 255, 255 / 255];
+FY.inkOf = (c, k = 1) => FY.pack(c[0] * k, c[1] * k, c[2] * k);
+FY.len = (s) => Array.from(s).length;
+/** 'for you' -> 'f o r   y o u': small, airy letters. */
+FY.spaced = (text) => text.split(" ").filter(Boolean).map((w) => Array.from(w).join(" ")).join("   ");
+FY.TOUCH = matchMedia("(pointer: coarse)").matches;
+FY.CROP = 0.97;                                   // trim a hair off the edit's edges, like art.py
+
+// ── the code pane: types a python file out line by line ─────────────────────
+const KEYWORDS = new Set(("False None True and as assert async await break class continue def del elif else except " +
+  "finally for from global if import in is lambda nonlocal not or pass raise return try while with yield").split(" "));
+
+/** colours for python source, token by token, the way art.py's highlighter does it. */
+function highlight(lines, builtins) {
+  const C = FY.C, paint = lines.map((l) => new Int32Array(l.length).fill(C.TEXT));
+  const set = (r0, c0, r1, c1, colour) => {
+    for (let r = r0; r <= r1; r++) paint[r].fill(colour, r === r0 ? c0 : 0, r === r1 ? c1 : paint[r].length);
+  };
+  let prev = "", r = 0, c = 0;
+  while (r < lines.length) {
+    const L = lines[r];
+    if (c >= L.length) { r++; c = 0; continue; }
+    const ch = L[c], rest = L.slice(c);
+    if (ch === " " || ch === "\t") { c++; continue; }
+    if (ch === "#") { set(r, c, r, L.length, C.COMMENT); r++; c = 0; continue; }
+    const str = /^([rRbBuUfF]{0,2})("""|'''|"|')/.exec(rest);
+    if (str && !/[A-Za-z0-9_]/.test(L[c - 1] || "")) {         // a string, maybe over several lines
+      const q = str[2];
+      let er = r, ec = c + str[0].length, done = false;
+      while (er < lines.length && !done) {
+        const E = lines[er];
+        while (ec < E.length) {
+          if (E[ec] === "\\") { ec += 2; continue; }
+          if (E.startsWith(q, ec)) { ec += q.length; done = true; break; }
+          ec++;
+        }
+        if (!done) {
+          if (q.length === 1) { ec = E.length; done = true; } else { er++; ec = 0; }
+        }
+      }
+      er = Math.min(er, lines.length - 1);
+      set(r, c, er, Math.min(ec, lines[er].length), C.STRING);
+      r = er;
+      c = ec;
+      continue;
+    }
+    const num = /^(0[xXoObB][0-9a-fA-F_]+|(\d[\d_]*\.?\d*|\.\d+)([eE][+-]?\d+)?j?)/.exec(rest);
+    if (num && /[0-9.]/.test(ch) && !(ch === "." && !/\d/.test(L[c + 1] || ""))) {
+      set(r, c, r, c + num[0].length, C.NUMBER);
+      c += num[0].length;
+      continue;
+    }
+    const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest);
+    if (name) {
+      const w = name[0];
+      const colour = KEYWORDS.has(w) ? C.KEYWORD : prev === "def" || prev === "class" ? C.FUNC : builtins.has(w) ? C.NAME : null;
+      if (colour !== null) set(r, c, r, c + w.length, colour);
+      prev = w;
+      c += w.length;
+      continue;
+    }
+    const op = /^(\*\*=|\/\/=|>>=|<<=|\.\.\.|->|:=|[-+*/%@&|^<>=!]=|\*\*|\/\/|<<|>>|[-+*/%@&|^~<>=.,:;()[\]{}!])/.exec(rest);
+    if (op) {
+      set(r, c, r, c + op[0].length, C.OP);
+      prev = op[0];
+      c += op[0].length;
+      continue;
+    }
+    c++;
+  }
+  return paint;
+}
+
+/** types a source file out, line by line, while the art plays (art.py's Code). */
+FY.Code = class Code {
+  constructor(src, cps, builtins) {
+    this.lines = src.replace(/\r/g, "").split("\n");
+    this.paint = highlight(this.lines, new Set(builtins));
+    this.starts = [0];
+    for (const l of this.lines) this.starts.push(this.starts[this.starts.length - 1] + l.length + 1);
+    this.total = Math.max(1, this.starts[this.starts.length - 1]);
+    const mark = Math.max(0, this.lines.findIndex((l) => l.startsWith("# ── the art")));
+    this.begin = this.starts[mark];
+    this.cps = cps;
+  }
+
+  draw(scr, x, y, w, h, t) {
+    if (w < 14 || h < 1) return;
+    const C = FY.C, pos = (this.begin + Math.trunc(t * this.cps)) % this.total;
+    let lo = 0, hi = this.starts.length - 1;                     // the line holding pos
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.starts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    const line = lo, col = pos - this.starts[line];
+    const top = line - Math.trunc(h * 0.62), cx = x + 7, room = w - 8;
+    for (let r = 0; r < h; r++) {
+      const n = top + r;
+      if (n < 0 || n > line) continue;
+      const here = n === line, row = y + r, bg = here ? C.HILITE : 0;
+      const fade = Math.min(1, (r + 1) / 4);                    // older lines melt into the dark
+      if (here) {
+        scr.fill(x, row, w, bg);
+        scr.put(x, row, "▌", C.BAR, bg);
+      }
+      scr.put(x + 1, row, String(n + 1).padStart(4), here ? C.BAR : FY.dim(C.LINENO, fade), bg);
+      const text = this.lines[n].slice(0, here ? col : undefined).slice(0, room);
+      if (text) scr.put(cx, row, text, Array.from(this.paint[n].subarray(0, text.length), (c) => FY.dim(c, fade)), here ? bg : undefined);
+      if (here) scr.put(Math.min(cx + text.length, x + w - 1), row, " ", 0, C.BAR);   // the cursor
+    }
+  }
+};
+
+/** art on top and code below (tall windows), or side by side (wide ones). (art.py's Layout) */
+FY.Layout = class Layout {
+  constructor(W, H, aspect, code, cell) {
+    const fit = (bw, bh) => {
+      const vw = Math.max(1, Math.min(bw, Math.trunc(bh * aspect * cell)));
+      return [vw, Math.max(1, Math.min(bh, Math.trunc(vw / (aspect * cell) + 0.5)))];
+    };
+    const options = [];
+    if (code) {
+      const hc = Math.max(7, Math.trunc(H * 0.36));
+      if (H - hc - 2 >= 10) options.push([[0, 0, W, H - hc - 2], [0, H - hc - 2, W], [0, H - hc, W, hc]]);
+      const wc = Math.min(Math.max(44, Math.trunc(W * 0.4)), W - 24);
+      if (wc >= 30) {
+        const wa = W - wc - 1;
+        options.push([[0, 0, wa, H], [wa + 1, 0, wc], [wa + 1, 2, wc, H - 2]]);
+      }
+    }
+    if (!options.length) options.push([[0, 0, W, H - 1], [0, H - 1, W], null]);
+    const area = (o) => fit(o[0][2], Math.max(1, o[0][3] - 4)).reduce((a, b) => a * b);
+    const best = options.reduce((a, b) => (area(b) > area(a) ? b : a));
+    [this.art, this.status, this.code] = best;
+    const [ax, ay, aw, ah] = this.art, [vw, vh] = fit(aw, Math.max(1, ah - 4));
+    this.video = [ax + Math.floor((aw - vw) / 2), ay + 1 + Math.floor((Math.max(1, ah - 4) - vh) / 2), vw, vh];
+  }
+};
+
+// ── pictures of words, and your @ ───────────────────────────────────────────
+FY.picture = async function (id, url) {
+  const img = new Image();
+  await new Promise((done, fail) => {                           // (plain onload: decode() can hang on some phones)
+    img.onload = done;
+    img.onerror = () => fail(new Error(`couldn't load the ${id} picture`));
+    img.src = url;
+  });
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.drawImage(img, 0, 0);
+  const d = x.getImageData(0, 0, c.width, c.height).data;
+  const a = new Float32Array(c.width * c.height);
+  for (let i = 0; i < a.length; i++) a[i] = d[i * 4] / 255;
+  return { id, w: c.width, h: c.height, a, sat: null };
+};
+
+/** box-filter a picture down to h x w (every output pixel is the mean of its patch). */
+function areaResize(pic, h, w) {
+  if (!pic.sat) {                                               // a summed-area table, made once
+    const S = new Float64Array((pic.h + 1) * (pic.w + 1)), W1 = pic.w + 1;
+    for (let y = 0; y < pic.h; y++) {
+      let run = 0;
+      for (let x = 0; x < pic.w; x++) {
+        run += pic.a[y * pic.w + x];
+        S[(y + 1) * W1 + x + 1] = S[y * W1 + x + 1] + run;
+      }
+    }
+    pic.sat = S;
+  }
+  const S = pic.sat, W1 = pic.w + 1;
+  const ys = Int32Array.from({ length: h + 1 }, (_, i) => Math.floor((pic.h * i) / h));
+  const xs = Int32Array.from({ length: w + 1 }, (_, i) => Math.floor((pic.w * i) / w));
+  const out = new Float32Array(h * w);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const total = S[ys[y + 1] * W1 + xs[x + 1]] - S[ys[y] * W1 + xs[x + 1]] - S[ys[y + 1] * W1 + xs[x]] + S[ys[y] * W1 + xs[x]];
+      out[y * w + x] = total / Math.max((ys[y + 1] - ys[y]) * (xs[x + 1] - xs[x]), 1);
+    }
+  }
+  return out;
+}
+
+const words = new Map();
+/** a word picture as glyphs: solid strokes get dense letters, their edges get matching shapes.
+    solid: one letter for every fully inked cell (steadier, so small words stay readable). */
+FY.wordArt = function (cols, pic, solid = null) {
+  const key = `${pic.id}|${cols}|${solid}`;
+  if (words.has(key)) return words.get(key);
+  const rows = Math.max(2, Math.round((cols * pic.h) / pic.w / 2));   // cells are twice as tall as wide
+  const img = areaResize(pic, rows * 8, cols * 4);
+  const rng = FY.rng(9), glyph = new Uint8Array(rows * cols), cover = new Float32Array(rows * cols);
+  const cell = new Float32Array(32), full = solid ? FY.CHARS.indexOf(solid) : -1;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let s = 0, s2 = 0;
+      for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 4; x++) {
+          const v = img[(r * 8 + y) * cols * 4 + c * 4 + x];
+          cell[y * 4 + x] = v;
+          s += v;
+          s2 += v * v;
+        }
+      }
+      const mean = s / 32, i = r * cols + c;
+      let g = TONE[FY.clip((mean * rng.uniform(0.8, 1.0) * 255) | 0, 0, 255)];
+      if (full >= 0 && mean > 0.85) g = full;
+      if (Math.sqrt(Math.max(0, s2 / 32 - mean * mean)) > 0.2) g = FY.match32(cell, 0.82);
+      glyph[i] = g;
+      cover[i] = mean;
+    }
+  }
+  const art = { glyph, cover, rows, cols };
+  words.set(key, art);
+  return art;
+};
+
+/** your @, drawn big when the edit reaches its closing card. at the edit's own size the
+    name would be a smudge a few rows tall, so it gets the handwritten-word treatment and
+    moves exactly as the card does: up from below, two flashes, a bounce, then it settles. */
+FY.Signature = class Signature {
+  constructor(pic, data) {
+    this.pic = pic;
+    this.name = data.name;
+    this.start = data.start;                                    // when the card comes up
+    this.track = data.track;                                    // [seconds, offset, flash]
+    this.tall = pic.h / pic.w;
+    const rng = FY.rng(21);                                     // glitter just above and below the name
+    this.sparks = Array.from({ length: 8 }, () => [rng.uniform(-0.05, 1.05), 0.5 + rng.choice([-1, 1]) * rng.uniform(0.7, 1.4), rng.uniform(0, FY.TAU)]);
+  }
+  draw(scr, box, videoH, age) {
+    const [bx, by, bw, bh] = box, { HOT, BLUSH } = FY;
+    const { glyph, cover, rows, cols } = FY.wordArt(Math.max(12, Math.min(Math.trunc(bw * 0.92), Math.trunc((bh * 1.1) / this.tall))), this.pic, "@");
+    let i = 0;
+    while (i + 1 < this.track.length && this.track[i + 1][0] <= age) i++;
+    const [, off, flash] = this.track[i];
+    const x0 = bx + Math.floor((bw - cols) / 2);
+    const y0 = by + Math.floor((bh - rows) / 2) + Math.round((off / FY.CROP) * videoH);
+    const bright = Math.min(1, 0.55 + age / 0.2);
+    const band = FY.mod((age - 1.0) * 0.4, 2.2) - 0.4;          // once it has settled, a slow shine
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const g = glyph[r * cols + c], x = x0 + c, y = y0 + r;
+        if (!g || x < bx || x >= bx + bw || y < by || y >= by + bh) continue;
+        const fx = c / Math.max(cols - 1, 1), fy = r / Math.max(rows - 1, 1);
+        let col;
+        if (flash) col = BLUSH.map((v) => v * 0.4 + 0.6);      // the card's flashes: white-hot
+        else {
+          const k = 0.62 + 0.38 * cover[r * cols + c];
+          const shine = age > 1.0 ? 0.33 * Math.exp(-(((fx - band + 0.15 * fy) / 0.05) ** 2)) : 0;
+          col = [0, 1, 2].map((q) => (HOT[q] * (1 - fx * 0.85) + BLUSH[q] * fx * 0.85) * k + shine);
+        }
+        scr.ch[y * scr.w + x] = FY.CODES[g];
+        scr.fg[y * scr.w + x] = FY.pack(col[0] * bright, col[1] * bright, col[2] * bright);
+      }
+    }
+    if (age > 0.9) {                                            // and a little glitter around it
+      for (const [sx, sy, ph] of this.sparks) {
+        const b = Math.max(0, Math.sin((age - 0.9) * 1.7 + ph)) ** 3;
+        const x = Math.trunc(x0 + sx * cols), y = Math.trunc(y0 + sy * rows);
+        if (b <= 0.12 || y < by || y >= by + bh || x < bx || x >= bx + bw || !scr.free(x, y)) continue;
+        scr.ch[y * scr.w + x] = b > 0.75 ? 42 : b > 0.4 ? 43 : 0xb7;
+        const k = 0.35 + 0.65 * b;
+        scr.fg[y * scr.w + x] = FY.pack((BLUSH[0] * 0.6 + 0.4) * k, (BLUSH[1] * 0.6 + 0.4) * k, (BLUSH[2] * 0.6 + 0.4) * k);
+      }
+    }
+  }
+};
+
+// ── sound and pictures from the page ────────────────────────────────────────
+/** the current video frame, cropped a hair and scaled to w x h pixels (RGBA), or null. */
+FY.Grab = class Grab {
+  constructor() {
+    this.c = document.createElement("canvas");
+    this.x = this.c.getContext("2d", { willReadFrequently: true });
+  }
+  get(video, w, h) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return null;
+    if (this.c.width !== w || this.c.height !== h) {
+      this.c.width = w;
+      this.c.height = h;
+    }
+    const sw = vw * FY.CROP, sh = vh * FY.CROP;
+    this.x.imageSmoothingEnabled = true;
+    this.x.imageSmoothingQuality = "high";
+    this.x.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, w, h);
+    try {
+      return this.x.getImageData(0, 0, w, h).data;
+    } catch (e) {                                               // served from somewhere that forbids reading it
+      return null;
+    }
+  }
+};
+
+/** the edit, with its song: a <video> the canvas redraws. phones only let sound start from a
+    tap, so the first tap wakes it; if sound is still refused it plays silently and says so. */
+FY.VideoSong = class VideoSong {
+  constructor(v, mute) {
+    this.v = v;
+    this.mute = mute;
+    this.failed = !v || !v.canPlayType("video/mp4");
+    this.blocked = false;
+    this.woken = false;
+    this.aspect = 1;
+    this.length = 41.75;
+    if (this.failed) return;
+    v.muted = mute;
+    v.addEventListener("loadedmetadata", () => {
+      if (v.videoWidth) this.aspect = v.videoWidth / v.videoHeight;
+      if (isFinite(v.duration)) this.length = v.duration;
+    });
+    v.addEventListener("error", () => { this.failed = true; });
+  }
+  wake() {                                                      // (inside a tap or key press, once)
+    if (this.failed || this.woken) return;
+    this.woken = true;
+    const p = this.v.play();
+    if (p && p.catch) p.catch(() => {});
+    this.v.pause();
+  }
+  start() {
+    if (this.failed) return;
+    const v = this.v;
+    v.currentTime = 0;
+    v.muted = this.mute;
+    const p = v.play();
+    if (p && p.then) {
+      p.then(() => { this.blocked = false; }).catch(() => {
+        if (this.mute) return;
+        this.blocked = true;                                    // no sound allowed yet: play silently,
+        v.muted = true;                                         // and ask for a tap
+        v.play().catch(() => {});
+      });
+    }
+  }
+  stop() {
+    if (!this.failed) this.v.pause();
+  }
+  unmute() {
+    const v = this.v;
+    v.muted = false;
+    this.blocked = false;
+    v.play().catch(() => {});
+  }
+  time() { return this.failed ? 0 : this.v.currentTime; }
+  ready() { return !this.failed && this.v.readyState >= 2; }
+  over() {
+    const v = this.v;
+    return v.ended || (isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration - 0.04);
+  }
+};
+
+/** a piece of music that loops without a seam (web audio plays the exact loop, sample for sample). */
+FY.LoopSong = class LoopSong {
+  constructor(url, length, mute) {
+    this.length = length;
+    this.buffer = this.src = null;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (mute || !AC) return;
+    try {
+      if (navigator.audioSession) navigator.audioSession.type = "playback";   // iphones: play on silent mode too
+    } catch (e) { /* older safari */ }
+    this.ctx = new AC();
+    fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))))
+      .then((data) => new Promise((done, fail) => this.ctx.decodeAudioData(data, done, fail)))
+      .then((buffer) => {
+        const ch = buffer.getChannelData(0);                    // skip any silent priming the decoder kept
+        let first = 0;
+        while (first < Math.min(ch.length, buffer.sampleRate / 5) && Math.abs(ch[first]) < 1e-4) first++;
+        this.offset = first / buffer.sampleRate;
+        this.buffer = buffer;
+      })
+      .catch(() => {
+        this.buffer = null;
+        this.failed = true;
+      });
+  }
+  get ready() { return !!this.buffer; }
+  get available() { return !!this.ctx && !this.failed; }
+  wake() {                                                      // (inside a tap or key press)
+    if (this.ctx && this.ctx.state !== "running") this.ctx.resume().catch(() => {});
+  }
+  start() {
+    this.stop();
+    if (!this.buffer) return false;
+    const ctx = this.ctx, src = ctx.createBufferSource(), gain = ctx.createGain(), now = ctx.currentTime;
+    src.buffer = this.buffer;
+    src.loop = true;
+    src.loopStart = this.offset;
+    src.loopEnd = Math.min(this.buffer.duration, this.offset + this.length);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(1, now + 0.35);             // a breath of a fade in
+    src.connect(gain).connect(ctx.destination);
+    src.start(now, this.offset);
+    this.src = src;
+    this.gain = gain;
+    return true;
+  }
+  stop() {
+    if (!this.src) return;
+    const ctx = this.ctx, now = ctx.currentTime;
+    this.gain.gain.cancelScheduledValues(now);
+    this.gain.gain.setValueAtTime(this.gain.gain.value, now);
+    this.gain.gain.linearRampToValueAtTime(0, now + 0.25);
+    this.src.stop(now + 0.26);
+    this.src = null;
   }
 };

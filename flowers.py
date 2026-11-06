@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-flowers.py - a little garden grows in your terminal under the stars, then spins.
+flowers.py - a little garden grows in your terminal under the stars, then spins,
+to "Reflections" by Malcolm Todd (0:38-1:15, looping: reflections.m4a).
 
     python flowers.py
     python flowers.py --speed 0.6       spin faster from the start
+    python flowers.py --mute            no music
 
 keys:   up / down   (or + / -)      spin faster / slower
         right / left                push the spin that way (through zero and back)
@@ -19,13 +21,21 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
 
-from art import CHARS, C_HUD, C_PINK, C_RULE, C_STATUS, SHAPE, Code, Layout, Screen, Stars, Terminal, pack
+from art import (CHARS, C_HUD, C_PINK, C_RULE, C_STATUS, SHAPE, Code, Layout, Screen, Sound, Stars, Terminal,
+                 find_ffmpeg, pack)
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+SONG = os.path.join(HERE, "reflections.m4a")   # 0:38-1:15 of the song; its end melts into its start, so it loops
+CREDIT = "reflections · malcolm todd"
+LEAD = 0.39             # the music starts this much before the garden, so the spin begins on the big beat
 TAU = 2 * math.pi
 TILT = 0.26             # the camera looks down on the garden a little (radians)
 AIM_Y = 0.78            # the height the camera aims at
@@ -628,7 +638,34 @@ class Sky:
         scr.fg[view.ay + ri, view.ax + ci] = pack(tint[:, None] * (0.35 + 0.65 * b))
 
 
-# ── keys, notes, and the loop ───────────────────────────────────────────────
+# ── keys, notes, music, and the loop ────────────────────────────────────────
+class Song(Sound):
+    """the garden's music, on repeat (art.py's Sound, but looping)."""
+
+    def __init__(self, ff, path):
+        fd, self.wav = tempfile.mkstemp(prefix="garden_", suffix=".wav")
+        os.close(fd)
+        self.extract = subprocess.Popen(                 # no seeking: that would drop the first 23 ms
+            [ff, "-nostdin", "-loglevel", "error", "-y", "-i", path, "-ac", "2", "-ar", "44100",
+             "-c:a", "pcm_s16le", self.wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.ok, self.proc = None, None
+
+    def play(self):
+        if not self.ready():
+            return
+        if os.name == "nt":
+            import winsound
+            winsound.PlaySound(self.wav, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP
+                               | winsound.SND_NODEFAULT)
+            return
+        player = shutil.which("ffplay")
+        if player:
+            self.proc = subprocess.Popen([player, "-nodisp", "-loop", "0", "-loglevel", "quiet", self.wav],
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            super().play()                            # (afplay / aplay: once through)
+
+
 class Keys(Terminal):
     """the terminal from art.py, but arrow keys come back as names."""
 
@@ -662,7 +699,7 @@ class Show:
         self.view = View(*self.lay.art, cell, dither=colours == 256)
         self.stars, self.code, self.cell = Stars(), Code(os.path.abspath(__file__), cps), cell
 
-    def compose(self, garden, sky, t, spin, speed, paused, fps, tag, script, look="hd"):
+    def compose(self, garden, sky, t, spin, speed, paused, fps, tag, script, look="hd", song=False):
         scr, v = self.scr, self.view
         scr.clear()
         pts, tips = garden.points(t, v.res)
@@ -679,7 +716,7 @@ class Show:
         scr.put(ax + aw - len(stamp) - 1, ay, stamp, C_PINK)
         way = "||" if paused else ">>" if speed > 0.005 else "<<" if speed < -0.005 else "  "
         bar = int(round(abs(speed) / MAX_SPIN * 10))
-        notes = (f"{tag} · {time.localtime().tm_year}",
+        notes = (f"{tag} · {time.localtime().tm_year}" + (f"   ♪ {CREDIT}" if song else ""),
                  f"bloom {100 * garden.bloom(t):5.1f}%   spin {speed:+.2f} turns/s {way}",
                  f"{drawn}   [{'=' * bar}{'-' * (10 - bar)}]",
                  "up/dn speed  <-/-> push  space pause  r flip  g regrow  m look")
@@ -707,8 +744,16 @@ def main():
     ap.add_argument("--cps", type=float, default=170.0, help="typing speed of the code pane")
     ap.add_argument("--cell", type=float, default=2.0, help="height / width of one terminal cell")
     ap.add_argument("--colours", "--colors", choices=("auto", "24", "256"), default="auto")
+    ap.add_argument("--mute", action="store_true", help="no music")
+    ap.add_argument("--song", default=SONG, help="the music (loops); reflections.m4a by default")
     args = ap.parse_args()
 
+    song = None
+    if not args.mute and os.path.isfile(args.song):
+        try:
+            song = Song(find_ffmpeg(), args.song)       # unpacked to a wav while the window opens
+        except SystemExit:                            # no ffmpeg: the garden grows in silence
+            song = None
     term, garden, sky = Keys(), Garden(), Sky()
     colours, show_code = Terminal.colours(args.colours), not args.no_code
     script = os.path.basename(sys.argv[0]) or "flowers.py"
@@ -719,6 +764,9 @@ def main():
     start = last = time.perf_counter()
     try:
         term.open()
+        if song:
+            song.play()
+            start = last = time.perf_counter()        # the garden's clock starts with the music
         while not term.dead:
             key = term.key()
             k = key.lower()
@@ -737,7 +785,10 @@ def main():
                 chosen = -chosen
             if k == " ":
                 paused = not paused
-            if k == "g":                              # back to bare soil
+            if k == "g":                              # back to bare soil, and the song from the top
+                if song:
+                    song.stop()
+                    song.play()
                 start, spin, speed, sky = time.perf_counter(), 0.0, 0.0, Sky()
             if k == "c":
                 show_code, size = not show_code, None
@@ -750,14 +801,14 @@ def main():
 
             now = time.perf_counter()
             dt, last = min(now - last, 0.1), now
-            t = now - start
+            t = max(0.0, now - start - (LEAD if song else 0.0))
             grown = t > garden.done + 0.4
             target = 0.0 if (paused or not grown) else chosen
             speed += (target - speed) * min(1.0, dt * 2.5)    # ease into any change of speed
             spin += speed * TAU * dt
             fps += (1 / max(dt, 1e-3) - fps) * 0.1
 
-            tips = show.compose(garden, sky, t, spin, speed, paused, fps, args.tag, script, look)
+            tips = show.compose(garden, sky, t, spin, speed, paused, fps, args.tag, script, look, song is not None)
             sky.sparkle(tips, dt)
             term.write(show.scr.flush())
             frames += 1
@@ -768,6 +819,8 @@ def main():
         pass
     finally:
         term.close()
+        if song:
+            song.close()
     secs = time.perf_counter() - start
     if frames and secs > 0:
         print(f"drew {frames} frames in {secs:.1f}s  ({frames / secs:.1f} fps)")

@@ -9,6 +9,10 @@ The song plays along in sync.
 python art.py
 ```
 
+It plays the signed copy (`feelings_for_you.mp4`, see `sign.py` below) when it's there,
+and when the closing card comes up it draws **@chitrivjr** big enough to read, moving
+the way the card does. `--no-sign` leaves the card as it is in the video.
+
 ![three moments from the edit, as the terminal draws them](preview.png)
 
 ## For someone: `for_you.py`
@@ -55,6 +59,20 @@ python sign.py @chitrivjr
 (Needs Pillow: `pip install pillow`. `art.py` still plays the original `feelings.mp4`;
 `python art.py feelings_for_you.mp4` plays the signed one.)
 
+### On the web: `web/`
+
+The same gift as a website that opens on any phone or computer, with nothing to
+download: drag the **`web`** folder onto **app.netlify.com/drop**. It's the Python
+rewritten in JavaScript, drawn on a canvas, with the edit and the song playing in the page.
+
+When the song ends, the card comes back with three choices: **again**, **the garden**
+(`flowers.py` on its own, with Reflections), and **the edit** (`art.py` on its own,
+typing its own code). `Esc` or "‹ back" returns to the card. Each has its own link:
+`…netlify.app/#garden` and `…netlify.app/#edit` open straight into them.
+
+Phones: tap to begin, swipe up or down to change the spin speed (sideways in the garden
+pushes it), and the words in the garden's and the edit's bottom lines are buttons.
+
 ### Sending the real thing: `dist/for you.exe`
 
 One 50 MB file with everything inside: Python, the song, the edit (signed, if you ran
@@ -86,6 +104,12 @@ python flowers.py
 ```
 
 (or double-click `flowers.bat`)
+
+It grows to **"Reflections" by Malcolm Todd**, 0:38-1:15 (`reflections.m4a`). That part
+is cut so its last second and a half melts into the music just before 0:38, so it loops
+with no seam for as long as the garden turns. The music starts 0.39 s before the garden,
+so the bouquet starts to spin on the big beat at 9.5 s; `g` (regrow) restarts both
+together. `--mute` for silence, `--song other.m4a` for something else.
 
 | key | does |
 | --- | --- |
@@ -187,4 +211,5 @@ python art.py --help              everything else
    and a separate thread writes to the console while the next frame is drawn.
 
 `feelings.mp4` is the edit you sent (credit: @sumithsai_, from its end card).
-`feelings_for_you.mp4` is the copy re-signed by `sign.py`.
+`feelings_for_you.mp4` is the copy re-signed by `sign.py`. `reflections.m4a` is 0:38-1:15 of
+"Reflections" by Malcolm Todd.

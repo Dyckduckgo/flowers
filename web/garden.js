@@ -12,6 +12,7 @@
   const SPAN_X = 2.0, SPAN_Y = 1.75;
   const GROW = 4.0, OPEN = 3.2;   // seconds for a stem to grow, and for its flower to open
   FY.MAX_SPIN = 3.0;
+  FY.GARDEN_ASPECT = SPAN_X / SPAN_Y;
 
   // every flower: its stem runs from base to top (x, height, z), it starts growing at
   // `start` seconds, its head is `size` times life size and leans out by `tilt` degrees,
@@ -452,6 +453,10 @@
       return [easeOut((t - f.start) / GROW), smooth((t - f.start - GROW * 0.85) / OPEN)];
     }
 
+    bloom(t) {
+      return this.flowers.reduce((s, f) => s + this.stage(f, t)[1], 0) / this.flowers.length;
+    }
+
     /** every point in the garden at time t, plus the tips still growing (for sparkles). */
     points(t, res) {
       if (t >= this.done && this.cache && this.cache.res === res) return [this.cache.pts, []];
@@ -582,8 +587,9 @@
       });
     }
 
-    /** paint the garden into the screen; returns the depth of every cell (Infinity = sky). */
-    draw(scr, pts, t, spin, phases) {
+    /** paint the garden into the screen; returns the depth of every cell (Infinity = sky).
+        look: "letters" (glyph art), or "hd" (two shaded pixels per cell, split ▀ or ▌). */
+    draw(scr, pts, t, spin, phases, look = "letters") {
       const n = pts.n, { aw, ah, k, cell, cx, cy } = this;
       this.grow(n);
       const { col, row, zz, lit, rgb, face, nx, ny, tx, ty } = this;
@@ -673,6 +679,10 @@
           }
           out[c] = near;
           if (front < 0) continue;
+          if (look === "hd") {                                 // split top/bottom or left/right, whichever fits
+            this.pixels(scr, cxx, cyy, ow, rgb);
+            continue;
+          }
           const fo = ow[front], fp = part[fo];
           let cov = 0, r = 0, g = 0, b = 0, light = 0;
           for (let j = 0; j < 8; j++) {
@@ -707,24 +717,54 @@
       }
       return out;
     }
+
+    /** the hd look for one cell: its four quarters (2 samples each), shown as two pixels. */
+    pixels(scr, cx, cy, ow, rgb) {
+      const q = [[0, 2], [1, 3], [4, 6], [5, 7]].map(([a, b]) => [0, 1, 2].map((k) =>
+        ((ow[a] >= 0 ? rgb[ow[a] * 3 + k] : 0) + (ow[b] >= 0 ? rgb[ow[b] * 3 + k] : 0)) / 2));
+      const avg = (a, b) => [0, 1, 2].map((k) => (a[k] + b[k]) / 2);
+      const miss = (a, m) => (a[0] - m[0]) ** 2 + (a[1] - m[1]) ** 2 + (a[2] - m[2]) ** 2;
+      const top = avg(q[0], q[1]), bottom = avg(q[2], q[3]), left = avg(q[0], q[2]), right = avg(q[1], q[3]);
+      const rows = miss(q[0], top) + miss(q[1], top) + miss(q[2], bottom) + miss(q[3], bottom);
+      const cols = miss(q[0], left) + miss(q[2], left) + miss(q[1], right) + miss(q[3], right);
+      const upright = cols < rows * 0.8, ink = upright ? left : top, paper = upright ? right : bottom;
+      const at = (this.ay + cy) * scr.w + this.ax + cx;
+      scr.ch[at] = upright ? 0x258c : 0x2580;
+      scr.fg[at] = pack(ink[0], ink[1], ink[2]);
+      scr.bg[at] = pack(paper[0], paper[1], paper[2]) || 0;
+    }
   };
 
   // ── the sky ────────────────────────────────────────────────────────────────
   /** a thin crescent up in the corner. */
-  FY.moon = function (scr, ax, ay, aw, ah, cell) {
+  FY.moon = function (scr, ax, ay, aw, ah, cell, hd = false) {
     const R = clip(aw * 0.07, 3, 8);
     const mx = ax + aw * 0.17, my = ay + ah * 0.12 + 1;
     const LOOK = Array.from(":*%&@", (c) => c.codePointAt(0));
+    const light = (x, y, fy) => {                     // how much moon covers a point, and how bright
+      const dx = (x + 0.5 - mx) / R, dy = ((y + fy - my) * cell) / R;
+      const inside = smooth((1 - Math.hypot(dx, dy)) * R * 1.5);
+      const shadow = smooth((Math.hypot(dx - 0.42, dy + 0.12) - 0.9) * R * 1.5);
+      return [inside * shadow, clip(0.55 - dx, 0, 1)];
+    };
     for (let y = Math.trunc(my - R / cell) - 1; y < Math.trunc(my + R / cell) + 2; y++) {
       for (let x = Math.trunc(mx - R) - 1; x < Math.trunc(mx + R) + 2; x++) {
-        if (y < ay || y >= ay + ah || x < ax || x >= ax + aw || scr.ch[y * scr.w + x] !== SPACE) continue;
-        const dx = (x + 0.5 - mx) / R, dy = ((y + 0.5 - my) * cell) / R;
-        const inside = smooth((1 - Math.hypot(dx, dy)) * R * 1.5);
-        const shadow = smooth((Math.hypot(dx - 0.42, dy + 0.12) - 0.9) * R * 1.5);
-        if (inside * shadow <= 0.5) continue;
-        const shade = clip(0.55 - dx, 0, 1), k = 0.55 + 0.45 * shade;
-        scr.ch[y * scr.w + x] = LOOK[clip(Math.trunc(shade * 5), 0, 4)];
-        scr.fg[y * scr.w + x] = pack(0.96 * k, 0.92 * k, 0.74 * k);
+        if (y < ay || y >= ay + ah || x < ax || x >= ax + aw || !scr.free(x, y)) continue;
+        const at = y * scr.w + x;
+        if (hd) {                                     // two soft pixels per cell
+          const [a0, s0] = light(x, y, 0.25), [a1, s1] = light(x, y, 0.75);
+          if (a0 + a1 <= 0.05) continue;
+          const k0 = a0 * (0.55 + 0.45 * s0), k1 = a1 * (0.55 + 0.45 * s1);
+          scr.ch[at] = 0x2580;
+          scr.fg[at] = pack(0.96 * k0, 0.92 * k0, 0.74 * k0);
+          scr.bg[at] = pack(0.96 * k1, 0.92 * k1, 0.74 * k1);
+          continue;
+        }
+        const [a, shade] = light(x, y, 0.5);
+        if (a <= 0.5) continue;
+        const k = 0.55 + 0.45 * shade;
+        scr.ch[at] = LOOK[clip(Math.trunc(shade * 5), 0, 4)];
+        scr.fg[at] = pack(0.96 * k, 0.92 * k, 0.74 * k);
       }
     }
   };

@@ -2,7 +2,7 @@
 """
 art.py - plays a video as living ASCII art, right inside the terminal.
 
-    python art.py                   plays feelings.mp4 from this folder
+    python art.py                   plays the edit from this folder (the copy sign.py signed, if it's there)
     python art.py clip.mp4          ...or any other video
     python art.py --look pixels     sharp colour pixels instead of glyphs
     python art.py --no-code         just the art, no code pane
@@ -33,6 +33,8 @@ import tokenize
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+EDIT = next((p for p in (os.path.join(HERE, "feelings_for_you.mp4"), os.path.join(HERE, "feelings.mp4"))
+             if os.path.isfile(p)), os.path.join(HERE, "feelings.mp4"))      # the signed copy (sign.py) first
 SX, SY = 4, 8           # every terminal cell samples a 4 x 8 patch of the frame
 CROP = 0.97             # trim a hair off the edges (edits often carry a 1px border)
 
@@ -221,6 +223,66 @@ def to_cells(planes, sx, sy, scale=1 / 255):
         patch = planes[src, : r * sy, : c * sx].reshape(r, sy, c, sx).transpose(1, 3, 0, 2)
         np.multiply(patch, np.float32(scale), out=out[dst])
     return out.reshape(3, sy * sx, r * c)
+
+
+def area_mean(a, h, w):
+    """box-filter a picture down to h x w (every output pixel is the mean of its patch)."""
+    H, W = a.shape
+    ys, xs = np.linspace(0, H, h + 1).astype(int), np.linspace(0, W, w + 1).astype(int)
+    c = np.pad(a.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+    total = (c[ys[1:, None], xs[None, 1:]] - c[ys[:-1, None], xs[None, 1:]]
+             - c[ys[1:, None], xs[None, :-1]] + c[ys[:-1, None], xs[None, :-1]])
+    return total / np.maximum((ys[1:] - ys[:-1])[:, None] * (xs[1:] - xs[:-1])[None, :], 1)
+
+
+class Signature:
+    """your @ (signature.npz, made by sign.py), drawn big when the edit reaches its closing card.
+    at glyph size the card's own lettering is a smudge, so the name is set in big glyph letters
+    and moves exactly as the card does: up from below, two flashes, a bounce, then it settles."""
+
+    HOT, BLUSH = np.array([255, 64, 129]) / 255, np.array([255, 196, 214]) / 255
+
+    def __init__(self, path):
+        with np.load(path) as z:
+            self.alpha = z["alpha"] / 255.0
+            self.name = str(z["name"])
+            self.start = float(z["start"]) if "start" in z.files else 37.27     # when the card comes up
+            self.track = z["track"] if "track" in z.files else np.zeros((1, 3))  # seconds, offset, flash
+        self.tall = self.alpha.shape[0] / self.alpha.shape[1]
+        self.cache = {}
+
+    def glyphs(self, cols):
+        if cols not in self.cache:
+            rows = max(2, round(cols * self.tall / 2))                    # cells are twice as tall as wide
+            cells = area_mean(self.alpha, rows * SY, cols * SX).reshape(rows, SY, cols, SX)
+            cells = cells.transpose(0, 2, 1, 3).reshape(rows * cols, SY * SX)
+            glyph = TONE[np.clip(cells.mean(1) * 255, 0, 255).astype(int)]
+            glyph[cells.mean(1) > 0.85] = CHARS.tolist().index("@")      # solid strokes: one steady letter
+            edge = cells.std(1) > 0.2
+            glyph[edge] = (SHAPE_E - 2 * (0.82 * cells[edge]) @ SHAPE.T).argmin(1)
+            self.cache[cols] = (glyph.reshape(rows, cols), cells.mean(1).reshape(rows, cols))
+        return self.cache[cols]
+
+    def draw(self, scr, box, age):
+        x0, y0, w, h = box
+        scr.ch[y0: y0 + h, x0: x0 + w], scr.fg[y0: y0 + h, x0: x0 + w], scr.bg[y0: y0 + h, x0: x0 + w] = " ", 0, 0
+        glyph, cover = self.glyphs(max(12, min(int(w * 0.92), int(h * 1.1 / self.tall))))
+        rows, cols = glyph.shape
+        i = int(np.clip(np.searchsorted(self.track[:, 0], age, "right") - 1, 0, len(self.track) - 1))
+        _, off, flash = self.track[i]
+        x, y = x0 + (w - cols) // 2, y0 + (h - rows) // 2 + int(round(off / CROP * h))
+        ys, xs = np.nonzero(glyph > 0)
+        fx = xs / max(cols - 1, 1)
+        if flash:                                                # the card's flashes: white-hot
+            colour = np.tile((self.BLUSH * 0.4 + 0.6)[:, None], len(xs))
+        else:
+            colour = (self.HOT[:, None] * (1 - fx * 0.85) + self.BLUSH[:, None] * fx * 0.85) * (0.62 + 0.38 * cover[ys, xs])
+            band = ((age - 1.0) * 0.4) % 2.2 - 0.4               # once it has settled, a slow shine
+            colour = colour + 0.33 * np.exp(-((fx - band + 0.15 * ys / max(rows - 1, 1)) / 0.05) ** 2) * (age > 1.0)
+        cy, cx = y + ys, x + xs
+        ok = (cy >= y0) & (cy < y0 + h) & (cx >= x0) & (cx < x0 + w)
+        scr.ch[cy[ok], cx[ok]] = CHARS[glyph[ys[ok], xs[ok]]]
+        scr.fg[cy[ok], cx[ok]] = pack(np.clip(colour[:, ok] * min(1.0, 0.55 + age / 0.2), 0, 1))
 
 
 class Stars:
@@ -719,6 +781,9 @@ def compose(scr, lay, full, look, ink, stars, code, clock, t, info):
         scr.fg[vy: vy + vh, vx: vx + vw] = top.reshape(vh, vw)
         scr.bg[vy: vy + vh, vx: vx + vw] = bottom.reshape(vh, vw)
         drawn = vw * vh
+    sign = info.get("sign")
+    if sign and t >= sign.start:                      # the closing card: your @, big enough to read
+        sign.draw(scr, lay.video, t - sign.start)
 
     ax, ay, aw, ah = lay.art
     stars.draw(scr, ax, ay, aw, ah, clock)
@@ -744,8 +809,12 @@ def compose(scr, lay, full, look, ink, stars, code, clock, t, info):
 def play(args, ff, video, sound, term):
     fps = args.fps
     total = max(1, int((video.duration - args.start) * fps) + round(args.start * fps))
-    info = {"tag": args.tag or os.path.splitext(os.path.basename(args.video))[0],
-            "script": os.path.basename(sys.argv[0]) or "art.py", "frames": total, "fps": fps, "frame": 0}
+    sign_path = os.path.join(HERE, "signature.npz")
+    sign = Signature(sign_path) if (os.path.isfile(sign_path) and not args.no_sign
+                                    and os.path.basename(args.video).startswith("feelings")) else None
+    info = {"tag": args.tag or (sign.name if sign else os.path.splitext(os.path.basename(args.video))[0]),
+            "script": os.path.basename(sys.argv[0]) or "art.py", "frames": total, "fps": fps, "frame": 0,
+            "sign": sign}
     look, show_code, colours = args.look, not args.no_code, Terminal.colours(args.colours)
     ink, stars, code = Ink(), Stars(), Code(os.path.abspath(__file__), args.cps)
     frames = scr = lay = size = clock0 = last = None
@@ -811,7 +880,8 @@ def play(args, ff, video, sound, term):
 
 def main():
     ap = argparse.ArgumentParser(description="play a video as living ASCII art in the terminal")
-    ap.add_argument("video", nargs="?", default=os.path.join(HERE, "feelings.mp4"))
+    ap.add_argument("video", nargs="?", default=EDIT)
+    ap.add_argument("--no-sign", action="store_true", help="don't draw your @ (signature.npz) over the closing card")
     ap.add_argument("--look", choices=("ascii", "pixels"), default="ascii",
                     help="ascii = glyphs on black like the rose, pixels = sharp colour blocks")
     ap.add_argument("--no-code", action="store_true", help="hide the code pane")

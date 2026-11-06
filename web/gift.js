@@ -1,124 +1,28 @@
 /* gift.js - i grew some flowers for you. a web port of for_you.py from terminal-art:
    a little card, and when it's opened a garden grows under the stars and turns,
-   slowly, while the edit and its song play beside it. */
+   slowly, while the edit and its song play beside it. when the song is over the card
+   comes back, with the way to the other two pieces: the garden on its own, and the edit. */
 "use strict";
 (function () {
-  const { TAU, clip, mod, pack, dim, CHARS, CODES, TONE, SPACE } = FY;
-  const FPS = 30, SPIN = 0.12, CELL = 2.0, CROP = 0.97;
-
-  // the edit's colours: hot pink, rose, blush, a little mist, and a deep wine for things barely there
-  const HOT = [1, 64 / 255, 129 / 255];
-  const ROSE = [236 / 255, 92 / 255, 140 / 255];
-  const BLUSH = [1, 196 / 255, 214 / 255];
-  const MIST = [236 / 255, 220 / 255, 228 / 255];
-  const WINE = [110 / 255, 24 / 255, 60 / 255];
-  const CYAN = [90 / 255, 230 / 255, 255 / 255];
-
-  const query = new URLSearchParams(location.search);
-  const MUTE = query.has("mute");
-  const AUTOSTART = query.has("autostart") ? parseFloat(query.get("autostart")) || 6 : null;
-  const TOUCH = matchMedia("(pointer: coarse)").matches;
-  const PICS = {};
-
-  const inkOf = (c, k = 1) => pack(c[0] * k, c[1] * k, c[2] * k);
-  const len = (s) => Array.from(s).length;
-  /** 'for you' -> 'f o r   y o u': small, airy letters. */
-  const spaced = (text) => text.split(" ").filter(Boolean).map((w) => Array.from(w).join(" ")).join("   ");
+  const { TAU, clip, mod, pack, dim, CODES, SPACE, HOT, ROSE, BLUSH, MIST, WINE, CYAN, inkOf, len, spaced } = FY;
+  const SPIN = 0.12, CELL = 2.0;
+  const at = (scr, x, y) => y * scr.w + x;
+  const inside = (scr, x, y) => x >= 0 && x < scr.w && y >= 0 && y < scr.h;
   /** two quick beats, then a rest. */
   const heartbeat = (t) => {
     const p = mod(t, 1.15);
     return Math.exp(-((p / 0.07) ** 2)) + 0.65 * Math.exp(-(((p - 0.22) / 0.08) ** 2));
   };
-  const at = (scr, x, y) => y * scr.w + x;
-  const inside = (scr, x, y) => x >= 0 && x < scr.w && y >= 0 && y < scr.h;
-
-  // ── word pictures ───────────────────────────────────────────────────────────
-  async function picture(id, url) {
-    const img = new Image();
-    await new Promise((done, fail) => {                       // (plain onload: decode() can hang on some phones)
-      img.onload = done;
-      img.onerror = () => fail(new Error(`couldn't load the ${id} picture`));
-      img.src = url;
-    });
-    const c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
-    const x = c.getContext("2d", { willReadFrequently: true });
-    x.drawImage(img, 0, 0);
-    const d = x.getImageData(0, 0, c.width, c.height).data;
-    const a = new Float32Array(c.width * c.height);
-    for (let i = 0; i < a.length; i++) a[i] = d[i * 4] / 255;
-    return { id, w: c.width, h: c.height, a, sat: null };
-  }
-
-  /** box-filter a picture down to h x w (every output pixel is the mean of its patch). */
-  function areaResize(pic, h, w) {
-    if (!pic.sat) {                                   // a summed-area table, made once
-      const S = new Float64Array((pic.h + 1) * (pic.w + 1)), W1 = pic.w + 1;
-      for (let y = 0; y < pic.h; y++) {
-        let run = 0;
-        for (let x = 0; x < pic.w; x++) {
-          run += pic.a[y * pic.w + x];
-          S[(y + 1) * W1 + x + 1] = S[y * W1 + x + 1] + run;
-        }
-      }
-      pic.sat = S;
-    }
-    const S = pic.sat, W1 = pic.w + 1;
-    const ys = Int32Array.from({ length: h + 1 }, (_, i) => Math.floor((pic.h * i) / h));
-    const xs = Int32Array.from({ length: w + 1 }, (_, i) => Math.floor((pic.w * i) / w));
-    const out = new Float32Array(h * w);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const total = S[ys[y + 1] * W1 + xs[x + 1]] - S[ys[y] * W1 + xs[x + 1]] - S[ys[y + 1] * W1 + xs[x]] + S[ys[y] * W1 + xs[x]];
-        out[y * w + x] = total / Math.max((ys[y + 1] - ys[y]) * (xs[x + 1] - xs[x]), 1);
-      }
-    }
-    return out;
-  }
-
-  const words = new Map();
-  /** a word picture as glyphs: solid strokes get dense letters, their edges get matching shapes.
-      solid: one letter for every fully inked cell (steadier, so small words stay readable). */
-  function wordArt(cols, pic, solid = null) {
-    const key = `${pic.id}|${cols}|${solid}`;
-    if (words.has(key)) return words.get(key);
-    const rows = Math.max(2, Math.round((cols * pic.h) / pic.w / 2));   // cells are twice as tall as wide
-    const img = areaResize(pic, rows * 8, cols * 4);
-    const rng = FY.rng(9), glyph = new Uint8Array(rows * cols), cover = new Float32Array(rows * cols);
-    const cell = new Float32Array(32), full = solid ? CHARS.indexOf(solid) : -1;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        let s = 0, s2 = 0;
-        for (let y = 0; y < 8; y++) {
-          for (let x = 0; x < 4; x++) {
-            const v = img[(r * 8 + y) * cols * 4 + c * 4 + x];
-            cell[y * 4 + x] = v;
-            s += v;
-            s2 += v * v;
-          }
-        }
-        const mean = s / 32, i = r * cols + c;
-        let g = TONE[clip((mean * rng.uniform(0.8, 1.0) * 255) | 0, 0, 255)];
-        if (full >= 0 && mean > 0.85) g = full;
-        if (Math.sqrt(Math.max(0, s2 / 32 - mean * mean)) > 0.2) g = FY.match32(cell, 0.82);
-        glyph[i] = g;
-        cover[i] = mean;
-      }
-    }
-    const art = { glyph, cover, rows, cols };
-    words.set(key, art);
-    return art;
-  }
 
   // ── the card ───────────────────────────────────────────────────────────────
   /** i grew some / flowers / for you, laid out inside one box of the screen. */
   class Poster {
     constructor(x, y, w, h, prompt) {
       const cols = Math.trunc(Math.min(w * 0.66, Math.max(0, h - 8) * 4.0));
-      this.art = cols >= 18 ? wordArt(cols, PICS.flowers) : null;
+      this.art = cols >= 18 ? FY.wordArt(cols, FY.PICS.flowers) : null;
       const rows = this.art ? this.art.rows : 1;
       const top = y + Math.max(0, Math.floor((h - (rows + 7)) / 2));
+      this.box = [x, y, w, h];
       this.cols = this.art ? cols : len(spaced("flowers"));
       this.rows = rows;
       this.wx = x + Math.floor((w - this.cols) / 2);
@@ -127,7 +31,7 @@
       this.line2 = spaced("for you");
       this.at1 = [this.wx + Math.trunc(this.cols * 0.04), top];
       this.at2 = [this.wx + Math.trunc(this.cols * 0.96) - this.line2.length - 3, top + 2 + rows + 1];
-      this.prompt = `·   ${spaced(prompt)}   ·`;
+      this.prompt = prompt ? `·   ${spaced(prompt)}   ·` : "";
       this.atp = [x + Math.floor((w - len(this.prompt)) / 2), Math.min(y + h - 1, top + rows + 6)];
       const rng = FY.rng(12);
       this.sparks = Array.from({ length: 9 }, () => [
@@ -150,10 +54,13 @@
         scr.put(x + this.line2.length + 3 + jolt(), y, "♥", pack(HOT[0] * k + 0.25 * beat, HOT[1] * k + 0.25 * beat, HOT[2] * k + 0.25 * beat));
       }
       if (t > 2.0) this.sparkles(scr, t);
-      if (t > 4.8 && shake === 0) {                               // and a soft nudge to begin
-        const glow = Math.min(1, (t - 4.8) / 0.8) * (0.6 + 0.28 * Math.sin((t - 4.8) * 2.4));
-        scr.put(this.atp[0], this.atp[1], this.prompt, inkOf(BLUSH, glow));
+      if (t > 4.8 && shake === 0 && this.prompt) {                // and a soft nudge to begin
+        scr.put(this.atp[0], this.atp[1], this.prompt, inkOf(BLUSH, Poster.glow(t)));
       }
+    }
+
+    static glow(t) {
+      return Math.min(1, (t - 4.8) / 0.8) * (0.6 + 0.28 * Math.sin((t - 4.8) * 2.4));
     }
 
     word(scr, t, sweep, shake) {
@@ -192,7 +99,7 @@
         const front = Math.trunc(sweep * (cols - 1));
         for (let r = 0; r < rows; r++) {
           if (glyph[r * cols + front] || (front > 0 && glyph[r * cols + front - 1])) {
-            this.cell(scr, r, front, CHARS.indexOf("*"), pack(1, 1, 1));
+            this.cell(scr, r, front, FY.CHARS.indexOf("*"), pack(1, 1, 1));
             break;
           }
         }
@@ -211,8 +118,9 @@
         const b = Math.max(0, Math.sin(t * 1.6 + ph)) ** 3;
         const x = Math.trunc(sx), y = Math.trunc(sy);
         if (b < 0.12 || !scr.free(x, y)) continue;
+        const k = 0.35 + 0.65 * b;
         scr.ch[at(scr, x, y)] = b > 0.75 ? 42 : b > 0.4 ? 43 : 0xb7;
-        scr.fg[at(scr, x, y)] = pack((BLUSH[0] * 0.6 + 0.4) * (0.35 + 0.65 * b), (BLUSH[1] * 0.6 + 0.4) * (0.35 + 0.65 * b), (BLUSH[2] * 0.6 + 0.4) * (0.35 + 0.65 * b));
+        scr.fg[at(scr, x, y)] = pack((BLUSH[0] * 0.6 + 0.4) * k, (BLUSH[1] * 0.6 + 0.4) * k, (BLUSH[2] * 0.6 + 0.4) * k);
         if (b > 0.85) {                                           // a little cross of light
           for (const [dx, dy, c] of [[-1, 0, 45], [1, 0, 45], [0, -1, 124], [0, 1, 124]]) {
             if (scr.free(x + dx, y + dy)) {
@@ -273,7 +181,7 @@
       for (let i = 0; i < this.d.length; i++) {
         const d = this.d[i];
         const edge = clip((d / this.reach - 0.2) / 0.25, 0, 1);  // keep the middle clear for the words
-        if (edge <= 0.05 || mod(d - t * 2.2, 10.0) >= 0.9 || scr.ch[i] !== SPACE) continue;
+        if (edge <= 0.05 || mod(d - t * 2.2, 10.0) >= 0.9 || scr.ch[i] !== SPACE || scr.bg[i]) continue;
         scr.ch[i] = 0xb7;
         scr.fg[i] = inkOf(WINE, 0.45 + 0.9 * clip(1 - d / this.reach, 0, 1) * edge * strength);
       }
@@ -310,59 +218,9 @@
     }
   }
 
-  /** your @, drawn big when the edit reaches its closing card. at the edit's own size the
-      name would be a smudge a few rows tall, so it gets the handwritten-word treatment and
-      moves exactly as the card does: up from below, two flashes, a bounce, then it settles. */
-  class Signature {
-    constructor(pic, data) {
-      this.pic = pic;
-      this.start = data.start;                                  // when the card comes up
-      this.track = data.track;                                  // [seconds, offset, flash]
-      this.tall = pic.h / pic.w;
-      const rng = FY.rng(21);                                   // glitter just above and below the name
-      this.sparks = Array.from({ length: 8 }, () => [rng.uniform(-0.05, 1.05), 0.5 + rng.choice([-1, 1]) * rng.uniform(0.7, 1.4), rng.uniform(0, TAU)]);
-    }
-    draw(scr, box, videoH, age) {
-      const [bx, by, bw, bh] = box;
-      const { glyph, cover, rows, cols } = wordArt(Math.max(12, Math.min(Math.trunc(bw * 0.92), Math.trunc((bh * 1.1) / this.tall))), this.pic, "@");
-      let i = 0;
-      while (i + 1 < this.track.length && this.track[i + 1][0] <= age) i++;
-      const [, off, flash] = this.track[i];
-      const x0 = bx + Math.floor((bw - cols) / 2);
-      const y0 = by + Math.floor((bh - rows) / 2) + Math.round((off / CROP) * videoH);
-      const bright = Math.min(1, 0.55 + age / 0.2);
-      const band = mod((age - 1.0) * 0.4, 2.2) - 0.4;            // once it has settled, a slow shine
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const g = glyph[r * cols + c];
-          const x = x0 + c, y = y0 + r;
-          if (!g || x < bx || x >= bx + bw || y < by || y >= by + bh) continue;
-          const fx = c / Math.max(cols - 1, 1), fy = r / Math.max(rows - 1, 1);
-          let rgb;
-          if (flash) rgb = BLUSH.map((v) => v * 0.4 + 0.6);      // the card's flashes: white-hot
-          else {
-            const k = 0.62 + 0.38 * cover[r * cols + c];
-            const shine = age > 1.0 ? 0.33 * Math.exp(-(((fx - band + 0.15 * fy) / 0.05) ** 2)) : 0;
-            rgb = [0, 1, 2].map((q) => (HOT[q] * (1 - fx * 0.85) + BLUSH[q] * fx * 0.85) * k + shine);
-          }
-          scr.ch[at(scr, x, y)] = CODES[g];
-          scr.fg[at(scr, x, y)] = pack(rgb[0] * bright, rgb[1] * bright, rgb[2] * bright);
-        }
-      }
-      if (age > 0.9) {                                          // and a little glitter around it
-        for (const [sx, sy, ph] of this.sparks) {
-          const b = Math.max(0, Math.sin((age - 0.9) * 1.7 + ph)) ** 3;
-          const x = Math.trunc(x0 + sx * cols), y = Math.trunc(y0 + sy * rows);
-          if (b <= 0.12 || y < by || y >= by + bh || x < bx || x >= bx + bw || !scr.free(x, y)) continue;
-          scr.ch[at(scr, x, y)] = b > 0.75 ? 42 : b > 0.4 ? 43 : 0xb7;
-          const k = 0.35 + 0.65 * b;
-          scr.fg[at(scr, x, y)] = pack((BLUSH[0] * 0.6 + 0.4) * k, (BLUSH[1] * 0.6 + 0.4) * k, (BLUSH[2] * 0.6 + 0.4) * k);
-        }
-      }
-    }
-  }
-
   // ── the show: garden on one side, the edit on the other ────────────────────
+  const CHOICES = [["again", "again"], ["the garden", "garden"], ["the edit", "edit"]];
+
   class Stage {
     constructor(W, H, aspect, sign) {
       this.W = W;
@@ -391,8 +249,10 @@
         this.glyph = new Uint8Array(vw * vh);
         this.fg = new Int32Array(vw * vh);
       }
-      this.card = new Poster(...(this.edit || this.garden), TOUCH ? "tap again" : "r again");
+      this.card = new Poster(...(this.edit || this.garden), null);
       this.sign = this.video ? sign : null;
+      this.hits = [];
+      this.pick = 0;                                            // the menu item the keys point at
     }
 
     compose(garden, sky, stars, ink, frame, t, songT, spin, length, ended, petals, dt) {
@@ -403,6 +263,7 @@
       FY.moon(scr, gx, gy, gw, gh, CELL);
       stars.draw(scr, 0, 0, this.W, this.H, t);
       if (petals) petals.draw(scr, t, dt, 0.6);                // the card's petals keep falling
+      this.hits = [];
       if (frame && this.sign && songT >= this.sign.start) {
         this.sign.draw(scr, this.edit, this.video[3], songT - this.sign.start);   // the edit signs off: your @
       } else if (frame && this.video) {                         // the edit, as glyph art
@@ -415,13 +276,51 @@
             scr.fg[a] = dim(this.fg[i], k);
           }
         }
-      } else if (ended !== null) {                              // the song is over: the card again
-        this.card.draw(scr, ended);
+      } else if (ended !== null) {                              // the song is over: the card again,
+        this.card.draw(scr, ended);                             // and where to go from here
+        if (ended > 4.8) this.menu(scr, ended);
       }
       sky.draw(scr, this.view, depth, t, spin);
       this.title(scr, t);
       this.song(scr, songT, length, ended);
       return tips;
+    }
+
+    /** again · the garden · the edit: one line with keys, or a column of big targets on a phone. */
+    menu(scr, age) {
+      const [bx, by, bw, bh] = this.card.box, row = this.card.atp[1], glow = Poster.glow(age);
+      const airy = CHOICES.map(([label]) => spaced(label)), sep = "   ·   ";
+      const wide = airy.reduce((s, l) => s + l.length, 0) + sep.length * (CHOICES.length - 1);
+      const stack = FY.TOUCH && row + 2 * (CHOICES.length - 1) < by + bh;
+      const place = (i, label) => {
+        const x = stack ? bx + Math.floor((bw - label.length) / 2) : place.x;
+        const y = stack ? row + 2 * i : row;
+        if (!stack) place.x += label.length + sep.length;
+        const chosen = !FY.TOUCH && i === this.pick;
+        if (chosen) {
+          scr.put(x - 2, y, "›", inkOf(HOT, 0.6 + 0.4 * glow));
+          scr.put(x + label.length + 1, y, "‹", inkOf(HOT, 0.6 + 0.4 * glow));
+        }
+        scr.put(x, y, label, inkOf(BLUSH, chosen ? 1 : FY.TOUCH ? 0.35 + glow * 0.75 : glow * 0.85));
+        this.hits.push({ x0: x - 1, x1: x + label.length + 1, y, go: CHOICES[i][1] });
+        if (!stack && i < CHOICES.length - 1) scr.put(x + label.length + 3, y, "·", inkOf(WINE, 1.6));
+      };
+      const labels = !stack && wide + 4 > bw ? CHOICES.map(([l]) => l) : airy;
+      place.x = bx + Math.floor((bw - (labels.reduce((s, l) => s + l.length, 0) + sep.length * (CHOICES.length - 1))) / 2);
+      labels.forEach((label, i) => place(i, label));
+    }
+
+    /** which menu item (if any) a tap at this cell means. */
+    hit(cx, cy) {
+      let best = null, near = 2;
+      for (const h of this.hits) {
+        const d = Math.abs(cy - h.y);
+        if (cx >= h.x0 - 1 && cx <= h.x1 + 1 && d < near) {
+          near = d;
+          best = h.go;
+        }
+      }
+      return best;
     }
 
     title(scr, t) {
@@ -460,259 +359,163 @@
     }
   }
 
-  // ── the song: the edit's own video, played by the browser ──────────────────
-  class Song {
-    constructor(v) {
-      this.v = v;
-      this.failed = !v || !v.canPlayType("video/mp4");
-      this.blocked = false;
-      this.aspect = 1;
-      this.length = 41.75;
-      if (this.failed) return;
-      v.muted = MUTE;
-      v.addEventListener("loadedmetadata", () => {
-        if (v.videoWidth) this.aspect = v.videoWidth / v.videoHeight;
-        if (isFinite(v.duration)) this.length = v.duration;
-      });
-      v.addEventListener("error", () => { this.failed = true; });
+  // ── the gift, as one of the page's three scenes ────────────────────────────
+  FY.GiftMode = class GiftMode {
+    constructor(app) {
+      this.app = app;
+      this.stars = new FY.Stars();
+      this.scene = "card";
+      this.start = app.clock();
+      this.chosen = SPIN;
+      this.ended = null;
     }
-    /** inside the tap or key press: phones only let sound start from one, so wake the player now. */
-    unlock() {
-      if (this.failed) return;
-      const p = this.v.play();
-      if (p && p.catch) p.catch(() => {});
-      this.v.pause();
+
+    resize(W, H) {
+      const app = this.app;
+      this.W = W;
+      this.H = H;
+      this.scr = new FY.Screen(W, H);
+      this.poster = new Poster(0, 0, W, H, FY.TOUCH ? "tap to open" : "press enter");
+      this.petals = new FallingPetals(W, H);
+      this.rings = new Rings(W, H, CELL);
+      this.hadVideo = !app.video.failed;
+      this.stage = new Stage(W, H, this.hadVideo ? app.video.aspect : null, app.sign);
     }
-    start() {
-      if (this.failed) return;
-      const v = this.v;
-      v.currentTime = 0;
-      v.muted = MUTE;
-      const p = v.play();
-      if (p && p.then) {
-        p.then(() => { this.blocked = false; }).catch(() => {
-          if (MUTE) return;
-          this.blocked = true;                                    // no sound allowed yet: play silently,
-          v.muted = true;                                         // and ask for a tap
-          v.play().catch(() => {});
-        });
+
+    enter() {}                                                  // (coming back: everything is where it was)
+
+    leave() {
+      if (this.scene === "show" && this.ended === null) {       // left mid-song: it's over, show the card
+        this.ended = this.app.clock() - this.show;
       }
     }
-    unmute() {
-      const v = this.v;
-      v.muted = false;
-      this.blocked = false;
-      v.play().catch(() => {});
-    }
-    time() { return this.failed ? 0 : this.v.currentTime; }
-    ready() { return !this.failed && this.v.readyState >= 2; }
-    over() {
-      const v = this.v;
-      return v.ended || (isFinite(v.duration) && v.duration > 0 && v.currentTime >= v.duration - 0.04);
-    }
-  }
 
-  /** the current video frame, cropped a hair and scaled to cols*4 x rows*8 pixels. */
-  class Grab {
-    constructor() {
-      this.c = document.createElement("canvas");
-      this.x = this.c.getContext("2d", { willReadFrequently: true });
-    }
-    get(video, w, h) {
-      const vw = video.videoWidth, vh = video.videoHeight;
-      if (!vw || !vh) return null;
-      if (this.c.width !== w || this.c.height !== h) {
-        this.c.width = w;
-        this.c.height = h;
-      }
-      const sw = vw * CROP, sh = vh * CROP;
-      this.x.imageSmoothingEnabled = true;
-      this.x.imageSmoothingQuality = "high";
-      this.x.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, w, h);
-      try {
-        return this.x.getImageData(0, 0, w, h).data;
-      } catch (e) {                                             // served from somewhere that forbids reading it
-        return null;
-      }
-    }
-  }
-
-  // ── putting it together ────────────────────────────────────────────────────
-  async function main() {
-    const canvas = document.getElementById("screen");
-    const video = document.getElementById("song");
-    const D = window.FY_DATA;
-    [PICS.flowers, PICS.signature] = await Promise.all([picture("flowers", D.flowers), picture("signature", D.signature)]);
-    const sign = new Signature(PICS.signature, D);
-    const song = new Song(video), grab = new Grab(), R = new FY.Renderer(canvas), stars = new FY.Stars();
-    const clock = () => performance.now() / 1000;
-    let W = 0, H = 0, scr, poster, petals, rings, stage, hadVideo = false;
-    let scene = "card", start = clock(), last = start, left = 0, dust = null;
-    let show = 0, garden = null, sky = null, ink = null, spin = 0, speed = 0, chosen = SPIN, ended = null;
-
-    function rebuild() {                                        // (re)build everything for this window
-      W = R.cols;
-      H = R.rows;
-      scr = new FY.Screen(W, H);
-      poster = new Poster(0, 0, W, H, TOUCH ? "tap to open" : "press enter");
-      petals = new FallingPetals(W, H);
-      rings = new Rings(W, H, CELL);
-      hadVideo = !song.failed;
-      stage = new Stage(W, H, hadVideo ? song.aspect : null, sign);
-    }
-    R.fit();
-    rebuild();
-
-    function begin() {
-      if (scene !== "card") return;
-      song.unlock();
-      scene = "leaving";
-      left = clock();
-      scr.clear();
-      poster.draw(scr, 99);
-      dust = new Dust(scr, [0, 0, W, H], CELL);
+    begin() {
+      if (this.scene !== "card") return;
+      this.scene = "leaving";
+      this.left = this.app.clock();
+      this.scr.clear();
+      this.poster.draw(this.scr, 99);
+      this.dust = new Dust(this.scr, [0, 0, this.W, this.H], CELL);
       if (navigator.wakeLock) navigator.wakeLock.request("screen").catch(() => {});
     }
-    function again() {                                          // from the very beginning
-      if (scene !== "show") return;
-      song.start();
-      show = clock();
-      garden = new FY.Garden();
-      sky = new FY.Sky();
-      ended = null;
-      spin = speed = 0;
-    }
-    const faster = () => { chosen = Math.min(1.5, Math.round((chosen + 0.04) * 100) / 100); };
-    const slower = () => { chosen = Math.max(0, Math.round((chosen - 0.04) * 100) / 100); };
-    function tap() {
-      if (scene === "card") begin();
-      else if (scene === "show" && song.blocked) song.unmute();
-      else if (scene === "show" && ended !== null) again();
+
+    again() {                                                   // from the very beginning
+      if (this.scene !== "show") return;
+      this.app.video.start();
+      this.show = this.app.clock();
+      this.garden = new FY.Garden();
+      this.sky = new FY.Sky();
+      this.ended = null;
+      this.spin = this.speed = 0;
     }
 
-    addEventListener("keydown", (e) => {
-      const k = e.key;
-      if (k === "Enter") tap();
-      else if (k === "r" || k === "R") again();
-      else if (k === "ArrowUp" || k === "+" || k === "=") faster();
-      else if (k === "ArrowDown" || k === "-" || k === "_") slower();
-      else return;
-      e.preventDefault();
-    });
-    let drag = null;                                            // swipe up / down: faster / slower
-    addEventListener("pointerdown", (e) => { drag = { y: e.clientY, step: 0, moved: 0 }; });
-    addEventListener("pointermove", (e) => {
-      if (!drag) return;
-      const dy = e.clientY - drag.y;
-      drag.y = e.clientY;
-      drag.moved += Math.abs(dy);
-      drag.step += dy;
-      for (; drag.step <= -28; drag.step += 28) faster();
-      for (; drag.step >= 28; drag.step -= 28) slower();
-    });
-    addEventListener("pointerup", () => { setTimeout(() => { drag = null; }, 0); });
-    addEventListener("pointercancel", () => { drag = null; });
-    // taps: on touch screens a touchend (iPhones send no click for a plain canvas, and a touchend
-    // is what lets sound start); with a mouse, a click
-    let touchY = 0, touchMoved = 0, lastTouch = -1e9;
-    addEventListener("touchstart", (e) => {
-      touchY = e.touches[0].clientY;
-      touchMoved = 0;
-    }, { passive: true });
-    addEventListener("touchmove", (e) => {
-      touchMoved += Math.abs(e.touches[0].clientY - touchY);
-      touchY = e.touches[0].clientY;
-    }, { passive: true });
-    addEventListener("touchend", (e) => {
-      lastTouch = performance.now();
-      if (touchMoved < 12) {
-        e.preventDefault();                                   // (no second, mouse-style click)
-        tap();
+    choose(go) {
+      if (go === "again") this.again();
+      else this.app.go(go);
+    }
+
+    faster() { this.chosen = Math.min(1.5, Math.round((this.chosen + 0.04) * 100) / 100); }
+    slower() { this.chosen = Math.max(0, Math.round((this.chosen - 0.04) * 100) / 100); }
+
+    key(k) {
+      const video = this.app.video, menu = this.scene === "show" && this.ended !== null;
+      if (k === "Enter" || k === " ") {
+        if (this.scene === "card") this.begin();
+        else if (video.blocked) video.unmute();
+        else if (menu) this.choose(CHOICES[this.stage.pick][1]);
+        else return false;
+      } else if (menu && (k === "ArrowLeft" || k === "ArrowRight")) {
+        this.stage.pick = mod(this.stage.pick + (k === "ArrowRight" ? 1 : -1), CHOICES.length);
+      } else if (k === "r" || k === "R") this.again();
+      else if (k === "g" || k === "G") { if (menu) this.app.go("garden"); else return false; }
+      else if (k === "e" || k === "E") { if (menu) this.app.go("edit"); else return false; }
+      else if (k === "ArrowUp" || k === "+" || k === "=") this.faster();
+      else if (k === "ArrowDown" || k === "-" || k === "_") this.slower();
+      else return false;
+      return true;
+    }
+
+    tap(cx, cy) {
+      const video = this.app.video;
+      if (this.scene === "card") this.begin();
+      else if (this.scene === "show" && video.blocked) video.unmute();
+      else if (this.scene === "show" && this.ended !== null) {
+        const go = this.stage.hit(cx, cy);
+        if (go) this.choose(go);
       }
-    }, { passive: false });
-    addEventListener("click", () => {
-      if (performance.now() - lastTouch < 800) return;        // already handled as a touch
-      if (!drag || drag.moved < 12) tap();
-    });
-    let wheel = 0;
-    addEventListener("wheel", (e) => {
-      wheel += e.deltaY;
-      for (; wheel <= -100; wheel += 100) faster();
-      for (; wheel >= 100; wheel -= 100) slower();
-    }, { passive: true });
+    }
 
-    function frame(ms) {
-      requestAnimationFrame(frame);
-      const now = ms / 1000;
-      if (now - last < 1 / FPS - 0.004) return;
-      const dt = Math.min(now - last, 0.1);
-      last = now;
-      const work = performance.now();
-      if (R.fit() || hadVideo !== !song.failed) rebuild();
+    drag(dx, dy) {                                              // swipe up / down: faster / slower
+      this.step = (this.step || 0) + dy;
+      for (; this.step <= -28; this.step += 28) this.faster();
+      for (; this.step >= 28; this.step -= 28) this.slower();
+    }
 
-      if (scene === "card") {
-        if (AUTOSTART !== null && now - start > AUTOSTART) begin();
-        const t = now - start;
+    wheel(dy) {
+      this.roll = (this.roll || 0) + dy;
+      for (; this.roll <= -100; this.roll += 100) this.faster();
+      for (; this.roll >= 100; this.roll -= 100) this.slower();
+    }
+
+    frame(now, dt) {
+      const app = this.app, video = app.video;
+      if (this.hadVideo !== !video.failed) this.resize(this.W, this.H);
+      if (this.scene === "card") {
+        if (app.autostart !== null && now - this.start > app.autostart) this.begin();
+        const t = now - this.start, scr = this.scr;
         scr.clear();
-        rings.draw(scr, t);
-        stars.draw(scr, 0, 0, W, H, t);
-        petals.draw(scr, t, dt);
-        poster.draw(scr, t);
-        R.draw(scr);
-      } else if (scene === "leaving") {                         // a glitch, then glitter
-        const age = now - left, t = now - start;
+        this.rings.draw(scr, t);
+        this.stars.draw(scr, 0, 0, this.W, this.H, t);
+        this.petals.draw(scr, t, dt);
+        this.poster.draw(scr, t);
+        return scr;
+      }
+      if (this.scene === "leaving") {                           // a glitch, then glitter
+        const age = now - this.left, t = now - this.start, scr = this.scr;
         scr.clear();
-        stars.draw(scr, 0, 0, W, H, t);
-        petals.draw(scr, t, dt, Math.max(0, 1 - age));
+        this.stars.draw(scr, 0, 0, this.W, this.H, t);
+        this.petals.draw(scr, t, dt, Math.max(0, 1 - age));
         if (age < 0.45) {
-          rings.draw(scr, t, 1 - age / 0.45);
-          poster.draw(scr, 99, 0.5 + age);
-        } else dust.draw(scr, age - 0.45);
-        R.draw(scr);
+          this.rings.draw(scr, t, 1 - age / 0.45);
+          this.poster.draw(scr, 99, 0.5 + age);
+        } else this.dust.draw(scr, age - 0.45);
         if (age > 1.45) {
-          scene = "show";
-          show = now;
-          garden = new FY.Garden();
-          sky = new FY.Sky();
-          ink = new FY.Ink();
-          spin = speed = 0;
-          chosen = SPIN;
-          ended = null;
-          song.start();
+          this.scene = "show";
+          this.show = now;
+          this.garden = new FY.Garden();
+          this.sky = new FY.Sky();
+          this.ink = new FY.Ink();
+          this.spin = this.speed = 0;
+          this.chosen = SPIN;
+          this.ended = null;
+          video.start();
         }
-      } else {                                                  // the show
-        const t = now - show, songT = song.time();
-        let shot = null;
-        if (stage.video && ended === null) {
-          const signing = stage.sign && songT >= stage.sign.start;   // (the name needs no picture)
-          if (song.over()) ended = t;
-          else if (song.ready()) shot = signing ? true : grab.get(video, stage.video[2] * 4, stage.video[3] * 8);
-        }
-        const target = t > garden.done + 0.4 ? chosen : 0;
-        speed += (target - speed) * Math.min(1, dt * 1.5);
-        spin += speed * TAU * dt;
-        const tips = stage.compose(garden, sky, stars, ink, shot, t, songT, spin, hadVideo ? song.length : 0,
-          ended === null ? null : t - ended, petals, dt);
-        sky.sparkle(tips, dt);
-        if (song.blocked) {
-          stage.note(TOUCH ? "tap for sound ♪" : "press enter for sound ♪", 0.55 + 0.35 * Math.sin(now * 3));
-        } else {
-          const since = t - garden.done - 0.4;                  // once it starts to turn: how to steer it
-          if (since > 0 && since < 6) {
-            stage.note(TOUCH ? "swipe ↑ ↓ to spin" : "↑ ↓  spin faster / slower", 0.6 * Math.min(1, since, 6 - since));
-          }
-        }
-        R.draw(stage.scr);
+        return scr;
       }
-      FY.stats.ms += (performance.now() - work - FY.stats.ms) * 0.1;   // how long a frame takes to make
-      FY.stats.grid = `${W}x${H}`;
-      FY.stats.spin = chosen;
+      const stage = this.stage, t = now - this.show;           // the show
+      const songT = this.ended === null ? video.time() : video.length;   // (over: the bar stays full)
+      let shot = null;
+      if (stage.video && this.ended === null) {
+        const signing = stage.sign && songT >= stage.sign.start;   // (the name needs no picture)
+        if (video.over()) this.ended = t;
+        else if (video.ready()) shot = signing ? true : app.grab.get(video.v, stage.video[2] * 4, stage.video[3] * 8);
+      }
+      const target = t > this.garden.done + 0.4 ? this.chosen : 0;
+      this.speed += (target - this.speed) * Math.min(1, dt * 1.5);
+      this.spin += this.speed * TAU * dt;
+      const tips = stage.compose(this.garden, this.sky, this.stars, this.ink, shot, t, songT, this.spin,
+        this.hadVideo ? video.length : 0, this.ended === null ? null : t - this.ended, this.petals, dt);
+      this.sky.sparkle(tips, dt);
+      if (video.blocked) {
+        stage.note(FY.TOUCH ? "tap for sound ♪" : "press enter for sound ♪", 0.55 + 0.35 * Math.sin(now * 3));
+      } else {
+        const since = t - this.garden.done - 0.4;               // once it starts to turn: how to steer it
+        if (since > 0 && since < 6 && this.ended === null) {
+          stage.note(FY.TOUCH ? "swipe ↑ ↓ to spin" : "↑ ↓  spin faster / slower", 0.6 * Math.min(1, since, 6 - since));
+        }
+      }
+      return stage.scr;
     }
-    FY.stats = { ms: 0, grid: "" };
-    requestAnimationFrame(frame);
-  }
-
-  main().catch((e) => {
-    document.body.insertAdjacentHTML("beforeend", `<p class="oops">something went wrong: ${String(e && e.message || e)}</p>`);
-  });
+  };
 })();

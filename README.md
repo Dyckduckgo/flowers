@@ -105,7 +105,7 @@ python flowers.py
 
 (or double-click `flowers.bat`)
 
-It grows to **"Reflections" by Malcolm Todd**, 0:38-1:15 (`reflections.m4a`). That part
+It grows to **"Reflections" by The Neighbourhood**, 0:38-1:15 (`reflections.m4a`). That part
 is cut so its last second and a half melts into the music just before 0:38, so it loops
 with no seam for as long as the garden turns. The music starts 0.39 s before the garden,
 so the bouquet starts to spin on the big beat at 9.5 s; `g` (regrow) restarts both
@@ -212,4 +212,4 @@ python art.py --help              everything else
 
 `feelings.mp4` is the edit you sent (credit: @sumithsai_, from its end card).
 `feelings_for_you.mp4` is the copy re-signed by `sign.py`. `reflections.m4a` is 0:38-1:15 of
-"Reflections" by Malcolm Todd.
+"Reflections" by The Neighbourhood.

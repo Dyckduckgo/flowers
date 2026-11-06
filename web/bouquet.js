@@ -1,12 +1,12 @@
 /* bouquet.js - the garden on its own: a web port of flowers.py from terminal-art.
    a little bouquet grows out of the dark under the stars, then spins, and you steer it,
-   to "Reflections" by Malcolm Todd (0:38-1:15, looping). */
+   to "Reflections" by The Neighbourhood (0:38-1:15, looping). */
 "use strict";
 (function () {
   const { C, TAU, clip, inkOf, spaced, BLUSH, MIST, ROSE } = FY;
   const CELL = 2.0;
   const LEAD = 0.39;               // the music starts this much before the garden: the spin begins on the big beat
-  const CREDIT = "reflections · malcolm todd";
+  const CREDIT = "reflections · the neighbourhood";
 
   FY.GardenMode = class GardenMode {
     constructor(app) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 flowers.py - a little garden grows in your terminal under the stars, then spins,
-to "Reflections" by Malcolm Todd (0:38-1:15, looping: reflections.m4a).
+to "Reflections" by The Neighbourhood (0:38-1:15, looping: reflections.m4a).
 
     python flowers.py
     python flowers.py --speed 0.6       spin faster from the start
@@ -34,7 +34,7 @@ from art import (CHARS, C_HUD, C_PINK, C_RULE, C_STATUS, SHAPE, Code, Layout, Sc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SONG = os.path.join(HERE, "reflections.m4a")   # 0:38-1:15 of the song; its end melts into its start, so it loops
-CREDIT = "reflections · malcolm todd"
+CREDIT = "reflections · the neighbourhood"
 LEAD = 0.39             # the music starts this much before the garden, so the spin begins on the big beat
 TAU = 2 * math.pi
 TILT = 0.26             # the camera looks down on the garden a little (radians)

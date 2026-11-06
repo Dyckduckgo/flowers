@@ -150,9 +150,9 @@
       scr.put(sx + sw - right.length - 1, sy, right, C.HUD);
       const keys = FY.TOUCH ? [["‹ back", "Escape"], ["look", "m"], ["code", "c"]]
         : [["esc back", "Escape"], ["m look", "m"], ["c code", "c"]];
-      let x = sx + 14;
+      let x = sx + 13;
       for (const [label, key] of keys) {
-        if (x + label.length > sx + sw - right.length - 3) break;
+        if (x + label.length > sx + sw - right.length - 2) break;
         scr.put(x, sy, label, FY.TOUCH ? C.PINK : C.RULE + 0x404050);
         this.hits.push({ x0: x, x1: x + label.length, y: sy, key });
         x += label.length + 3;

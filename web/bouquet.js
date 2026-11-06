@@ -176,9 +176,9 @@
       const right = `running · ${this.fps.toFixed(0)} fps`;
       scr.put(sx + sw - right.length - 1, sy, right, C.HUD);
       const keys = FY.TOUCH ? [["‹ back", "Escape"], ["code", "c"]] : [["esc back", "Escape"], ["c code", "c"]];
-      let x = sx + 18;
+      let x = sx + 17;
       for (const [label, key] of keys) {
-        if (x + label.length > sx + sw - right.length - 3) break;
+        if (x + label.length > sx + sw - right.length - 2) break;
         scr.put(x, sy, label, FY.TOUCH ? C.PINK : C.RULE + 0x404050);
         this.hits.push({ x0: x, x1: x + label.length, y: sy, key });
         x += label.length + 3;

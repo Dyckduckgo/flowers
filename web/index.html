@@ -1,129 +1,62 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>i grew some flowers for you ♥ · Terminal Art</title>
-  <link rel="icon" type="image/x-icon" href="favicon.ico">
-  <link rel="stylesheet" href="style.css">
-  <meta name="description" content="Download the standalone terminal artwork for Windows: a living ASCII bouquet and synchronized music.">
-  <meta name="theme-color" content="#ff4081">
-  <!-- Open Graph -->
-  <meta property="og:title" content="i grew some flowers for you ♥ · Terminal Art">
-  <meta property="og:description" content="One-click Windows terminal artwork with a living ASCII bouquet, glowing stars, and synchronized music.">
-  <meta property="og:image" content="assets/for_you.png">
-  <meta property="og:type" content="website">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#000000">
+  <title>for you</title>
+  <meta name="description" content="sound on ♪">
+  <meta property="og:title" content="for you">
+  <meta property="og:description" content="sound on ♪">
+  <link rel="icon" href="heart.ico">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      height: 100dvh;
+      touch-action: none;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      cursor: default;
+    }
+    canvas { display: block; }
+    video {                       /* the edit plays here, out of sight: the canvas redraws it as letters */
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 2px;
+      height: 2px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .oops, noscript p {
+      position: fixed;
+      inset: auto 0 24px 0;
+      margin: 0;
+      text-align: center;
+      color: #c8a0b4;
+      font: 14px Consolas, Menlo, monospace;
+    }
+  </style>
 </head>
 <body>
-  <!-- Twinkling stars background -->
-  <div class="stars-bg" id="starsBg"></div>
-
-  <main class="page-container">
-    <!-- Header -->
-    <header class="hero">
-      <div class="badge">
-        <span class="pulse-dot"></span>
-        <span>Windows Standalone Terminal Artwork</span>
-      </div>
-
-      <div class="card-display">
-        <div class="sparkles-line">✦ · ✧ · ✦</div>
-        <h2 class="card-line1">i grew some</h2>
-        <h1 class="card-flowers">flowers</h1>
-        <h2 class="card-line2">for you <span class="heart-pulse">♥</span></h2>
-      </div>
-
-      <p class="hero-desc">
-        A card opens on a starry night. Press <strong>Enter</strong> and the card glitches and bursts into glitter.
-        Then a garden of 3D mathematical flowers blooms, glows, and turns slowly, with the edit and song playing beside it.
-      </p>
-
-      <!-- Primary Download Area -->
-      <div class="download-section">
-        <a href="assets/for_you.exe" download="for you.exe" class="btn-download" id="downloadBtn">
-          <span class="btn-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-13.051-1.801"/>
-            </svg>
-          </span>
-          <span class="btn-text">
-            <span class="btn-title">Download for Windows</span>
-            <span class="btn-sub">for you.exe · 48 MB · Double-click to run</span>
-          </span>
-          <span class="btn-arrow">↓</span>
-        </a>
-
-        <div class="download-tags">
-          <span class="tag">✔ Windows 10 &amp; 11</span>
-          <span class="tag">✔ Nothing to install (Python bundled)</span>
-          <span class="tag">✔ Full 24-bit ANSI colour</span>
-        </div>
-      </div>
-    </header>
-
-    <!-- Preview Screenshots -->
-    <section class="previews-section">
-      <h3 class="section-title"><span>✦</span> What It Looks Like In Your Terminal <span>✦</span></h3>
-      <div class="previews-grid">
-        <div class="preview-card">
-          <div class="preview-browser-bar">
-            <span class="dot red"></span>
-            <span class="dot yellow"></span>
-            <span class="dot green"></span>
-            <span class="bar-title">The Opening Card</span>
-          </div>
-          <img src="assets/for_you.png" alt="Opening card terminal screenshot" class="preview-img">
-        </div>
-
-        <div class="preview-card">
-          <div class="preview-browser-bar">
-            <span class="dot red"></span>
-            <span class="dot yellow"></span>
-            <span class="dot green"></span>
-            <span class="bar-title">The Living ASCII Edit &amp; Garden</span>
-          </div>
-          <img src="assets/preview.png" alt="ASCII art terminal preview" class="preview-img">
-        </div>
-      </div>
-    </section>
-
-    <!-- Running Guide -->
-    <section class="instructions-section">
-      <div class="card-glass">
-        <h3><span class="icon">🚀</span> How to Run</h3>
-        <ol class="steps-list">
-          <li>
-            <strong>Download the file</strong>: Click the button above to get <code>for you.exe</code>.
-          </li>
-          <li>
-            <strong>First-time opening on Windows</strong>: Because it is a hand-made independent app, Windows SmartScreen may say <em>"Windows protected your PC"</em>. Click <strong>More info → Run anyway</strong>.
-          </li>
-          <li>
-            <strong>Turn sound on!</strong> The window will open in black for a few seconds while unpacking, then the starry card appears. Press <kbd>Enter</kbd> to begin.
-          </li>
-        </ol>
-      </div>
-
-      <div class="card-glass">
-        <h3><span class="icon">⌨</span> Controls While It Plays</h3>
-        <div class="keys-table">
-          <div class="key-row"><kbd>Enter</kbd><span>Begin playback</span></div>
-          <div class="key-row"><kbd>↑</kbd> / <kbd>↓</kbd><span>Turn bouquet faster / slower</span></div>
-          <div class="key-row"><kbd>R</kbd><span>Play it all again from start</span></div>
-          <div class="key-row"><kbd>Q</kbd> or <kbd>Esc</kbd><span>Close</span></div>
-        </div>
-        <p class="tip-text">
-          <strong>Tip:</strong> Best in <em>Windows Terminal</em> or <em>VS Code terminal</em> for smooth 24-bit truecolour.
-        </p>
-      </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="footer">
-      <p>Made by Sarth♥ with Python, NumPy &amp; Love ♥ · Hosted on Vercel  </p>
-    </footer>
-  </main>
-
-  <script src="script.js"></script>
+  <canvas id="screen" aria-label="a card that says: i grew some flowers for you. tap or press enter to open it."></canvas>
+  <video id="song" src="feelings.mp4" playsinline webkit-playsinline preload="auto"></video>
+  <noscript><p>this one needs javascript turned on ♥</p></noscript>
+  <script src="data.js"></script>
+  <script src="engine.js"></script>
+  <script src="garden.js"></script>
+  <script src="gift.js"></script>
 </body>
 </html>

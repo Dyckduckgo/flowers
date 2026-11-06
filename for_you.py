@@ -11,6 +11,7 @@ keys:   enter  begin        up / down  turn faster / slower
         r  play it again     q  close
 
 lives next to art.py, flowers.py, feelings.mp4 and flowers_word.npz
+(and feelings_for_you.mp4 + signature.npz, once sign.py has put your @ on the ending)
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import time
 
 import numpy as np
 
-from art import (CHARS, SHAPE, SHAPE_E, TONE, Frames, Ink, Screen, Sound, Stars, Terminal, Video,
+from art import (CHARS, CROP, SHAPE, SHAPE_E, TONE, Frames, Ink, Screen, Sound, Stars, Terminal, Video,
                  dim, find_ffmpeg, pack, to_cells)
 from flowers import TAU, Garden, Keys, Sky, View, moon
 
@@ -34,7 +35,6 @@ WORD = os.path.join(HERE, "flowers_word.npz")      # "flowers", handwritten, as 
 BAKED = os.path.join(HERE, "feelings_frames.npz")  # the edit decoded ahead of time (the sendable .exe)
 TUNE = os.path.join(HERE, "feelings.wav")          # and its song
 SIGNATURE = os.path.join(HERE, "signature.npz")    # your @, from sign.py: shown big when the edit signs off
-CARD_AT = 37.27                                    # the second the edit's closing card appears
 FPS, SPIN = 30.0, 0.12                               # frames a second; turns a second once it blooms
 
 # the edit's colours: hot pink, rose, blush, a little mist, and a deep wine for things barely there
@@ -123,21 +123,78 @@ class Tune(Sound):
 _words = {}
 
 
-def word_art(cols, path=WORD):
-    """a word picture as glyphs: solid strokes get dense letters, their edges get matching shapes."""
-    if (path, cols) not in _words:
+def word_art(cols, path=WORD, solid=None):
+    """a word picture as glyphs: solid strokes get dense letters, their edges get matching shapes.
+    solid: one letter for every fully-inked cell (steadier, so small words stay readable)."""
+    if (path, cols, solid) not in _words:
         if not os.path.isfile(path):
             return None
-        a = np.load(path)["alpha"] / 255.0
+        with np.load(path) as z:
+            a = z["alpha"] / 255.0
         rows = max(2, round(cols * a.shape[0] / a.shape[1] / 2))      # cells are twice as tall as wide
         cells = area_resize(a, rows * 8, cols * 4).reshape(rows, 8, cols, 4).transpose(0, 2, 1, 3)
         cells = cells.reshape(rows * cols, 32)
         grain = np.random.default_rng(9).uniform(0.8, 1.0, len(cells))
         glyph = TONE[np.clip(cells.mean(1) * grain * 255, 0, 255).astype(int)]
+        if solid:
+            glyph[cells.mean(1) > 0.85] = CHARS.tolist().index(solid)
         edge = cells.std(1) > 0.2
         glyph[edge] = (SHAPE_E - 2 * (0.82 * cells[edge]) @ SHAPE.T).argmin(1)
-        _words[path, cols] = (glyph.reshape(rows, cols), cells.mean(1).reshape(rows, cols))
-    return _words[path, cols]
+        _words[path, cols, solid] = (glyph.reshape(rows, cols), cells.mean(1).reshape(rows, cols))
+    return _words[path, cols, solid]
+
+
+class Signature:
+    """your @ (saved by sign.py), drawn big when the edit reaches its closing card. at the edit's own
+    size the name would be a smudge four rows tall, so it gets the handwritten-word treatment instead,
+    and moves exactly as the card does: up from below, two flashes, a bounce, then it settles."""
+
+    def __init__(self, path=SIGNATURE):
+        self.path = path
+        with np.load(path) as z:
+            self.start = float(z["start"]) if "start" in z.files else 37.27      # when the card comes up
+            self.track = z["track"] if "track" in z.files else np.zeros((1, 3))  # seconds, offset, flash
+            self.tall = z["alpha"].shape[0] / z["alpha"].shape[1]
+        rng = np.random.default_rng(21)                          # glitter just above and below the name
+        above = 0.5 + rng.choice([-1, 1], 8) * rng.uniform(0.7, 1.4, 8)
+        self.sparks = np.stack([rng.uniform(-0.05, 1.05, 8), above, rng.uniform(0, TAU, 8)], 1)
+
+    @classmethod
+    def find(cls):
+        return cls() if os.path.isfile(SIGNATURE) else None
+
+    def draw(self, scr, box, video_h, age):
+        """box: the edit's side of the screen. video_h: how tall the edit itself is drawn there."""
+        bx, by, bw, bh = box
+        art = word_art(max(12, min(int(bw * 0.92), int(bh * 1.1 / self.tall))), self.path, solid="@")
+        if art is None:
+            return
+        glyph, cover = art
+        rows, cols = glyph.shape
+        i = int(np.clip(np.searchsorted(self.track[:, 0], age, "right") - 1, 0, len(self.track) - 1))
+        _, off, flash = self.track[i]
+        x0 = bx + (bw - cols) // 2
+        y0 = by + (bh - rows) // 2 + int(round(off / CROP * video_h))
+        ys, xs = np.nonzero(glyph > 0)
+        fx, fy = xs / max(cols - 1, 1), ys / max(rows - 1, 1)
+        if flash:                                                # the card's flashes: white-hot
+            colour = np.tile((BLUSH * 0.4 + 0.6)[:, None], len(xs))
+        else:
+            colour = (HOT[:, None] * (1 - fx * 0.85) + BLUSH[:, None] * fx * 0.85) * (0.62 + 0.38 * cover[ys, xs])
+            band = ((age - 1.0) * 0.4) % 2.2 - 0.4                # once it has settled, a slow shine
+            colour = colour + 0.33 * np.exp(-((fx - band + 0.15 * fy) / 0.05) ** 2) * (age > 1.0)
+        colour = colour * min(1.0, 0.55 + age / 0.2)
+        cy, cx = y0 + ys, x0 + xs
+        ok = (cy >= by) & (cy < by + bh) & (cx >= bx) & (cx < bx + bw)
+        scr.ch[cy[ok], cx[ok]] = CHARS[glyph[ys[ok], xs[ok]]]
+        scr.fg[cy[ok], cx[ok]] = pack(np.clip(colour[:, ok], 0, 1))
+        if age > 0.9:                                            # and a little glitter around it
+            for sx, sy, ph in self.sparks:
+                b = max(0.0, math.sin((age - 0.9) * 1.7 + ph)) ** 3
+                x, y = int(x0 + sx * cols), int(y0 + sy * rows)
+                if b > 0.12 and by <= y < by + bh and bx <= x < bx + bw and scr.ch[y, x] == " ":
+                    scr.ch[y, x] = "*" if b > 0.75 else "+" if b > 0.4 else "·"
+                    scr.fg[y, x] = ink_of(BLUSH * 0.6 + 0.4, 0.35 + 0.65 * b)
 
 
 # ── the card ────────────────────────────────────────────────────────────────
@@ -332,6 +389,7 @@ class Stage:
             vw = max(2, min(ew - 2, int(vh * aspect * cell)))
             self.video = (ex + (ew - vw) // 2, ey + (eh - vh) // 2, vw, vh)
         self.card = Poster(*(self.edit or self.garden), prompt="r again   q close")
+        self.sign = Signature.find() if self.video else None
 
     def compose(self, garden, sky, stars, ink, frame, t, spin, length, ended, petals=None, dt=0.0):
         scr, (gx, gy, gw, gh) = self.scr, self.garden
@@ -342,8 +400,8 @@ class Stage:
         stars.draw(scr, 0, 0, self.W, self.H, t)
         if petals is not None:                                   # the card's petals keep falling
             petals.draw(scr, t, dt, strength=0.6)
-        if frame is not None and self.video and t >= CARD_AT and os.path.isfile(SIGNATURE):
-            self._signature(scr, t - CARD_AT)                    # the edit signs off: your @, big
+        if frame is not None and self.sign and t >= self.sign.start:
+            self.sign.draw(scr, self.edit, self.video[3], t - self.sign.start)   # the edit signs off: your @
         elif frame is not None and self.video:                  # the edit, as glyph art
             vx, vy, vw, vh = self.video
             half = np.add(frame[:, 0::2, 0::2], frame[:, 1::2, 0::2], dtype=np.uint16)
@@ -358,25 +416,6 @@ class Stage:
         self._title(scr, t)
         self._song(scr, t, length, ended)
         return tips
-
-    def _signature(self, scr, age):
-        """the closing card, readable: the name bounces up into place and settles, like in the edit."""
-        vx, vy, vw, vh = self.video
-        art = word_art(max(12, int(vw * 0.9)), SIGNATURE)
-        if art is None:
-            return
-        glyph, cover = art
-        rows, cols = glyph.shape
-        bounce = 0.23 * vh * math.exp(-6.3 * age) * math.cos(TAU * age / 0.35)
-        x0, y0 = vx + (vw - cols) // 2, vy + (vh - rows) // 2 + int(round(bounce))
-        ys, xs = np.nonzero(glyph > 0)
-        fx = xs / max(cols - 1, 1)
-        colour = (HOT[:, None] * (1 - fx * 0.85) + BLUSH[:, None] * fx * 0.85) * (0.62 + 0.38 * cover[ys, xs])
-        colour *= min(1.0, age / 0.15)
-        cy, cx = y0 + ys, x0 + xs
-        ok = (cy >= vy) & (cy < vy + vh) & (cx >= vx) & (cx < vx + vw)
-        scr.ch[cy[ok], cx[ok]] = CHARS[glyph[ys[ok], xs[ok]]]
-        scr.fg[cy[ok], cx[ok]] = pack(np.clip(colour[:, ok], 0, 1))
 
     def _title(self, scr, t):
         text = "i grew some flowers for you"

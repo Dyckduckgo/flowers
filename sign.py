@@ -25,9 +25,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "feelings.mp4")
 OUT = os.path.join(HERE, "feelings_for_you.mp4")
 FONT = r"C:\Windows\Fonts\arialbd.ttf"          # the closest match to the edit's typeface
+NARROW = r"C:\Windows\Fonts\ARIALNB.TTF"         # for the gift's big letters: narrow and tall reads best
 OLD = "@sumithsai_"                              # what the card says now
 INK = np.array([77, 0, 36], float)               # its colours at rest
 W = H = 720
+FPS = 30000 / 1001
 
 
 def frames(ff, path, start=0.0):
@@ -109,6 +111,16 @@ def name_mask(text, size, origin_y):
     return np.asarray(im, float) / 255
 
 
+def signature_picture(text):
+    """the name for for_you.py's big glyph letters: narrow and stretched 1.5x tall, which stays
+    readable at ten-odd rows (at the edit's own proportions it turns to mush)."""
+    big = ImageFont.truetype(NARROW if os.path.isfile(NARROW) else FONT, 300)
+    l, t, r, b = big.getbbox(text)
+    im = Image.new("L", (r - l + 40, b - t + 40), 0)
+    ImageDraw.Draw(im).text((20 - l, 20 - t), text, fill=255, font=big)
+    return np.asarray(im.resize((im.width, round(im.height * 1.5)), Image.LANCZOS))
+
+
 def main():
     ap = argparse.ArgumentParser(description="put your own @ on the closing card")
     ap.add_argument("name", help='e.g. "@chitrivjr"')
@@ -134,27 +146,30 @@ def main():
                             "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-crf", "15", "-preset", "slow",
                             "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", OUT],
                            stdin=subprocess.PIPE)
-    changed = 0
+    changed, motion = 0, []
     for k, f in enumerate(frames(ff, SRC)):
-        if k / (30000 / 1001) > 36.5 and is_card(f):
+        if k / FPS > 36.5 and is_card(f):
             paper, ink = paper_and_ink(f)
             dy, L = fit(coverage(f.astype(float), paper, ink).sum(1), old_profile)
             a = blur_v(shift_v(new_rest, dy), L)[..., None]
             f = np.clip(paper + (ink - paper) * a, 0, 255).astype(np.uint8)
             if changed < 14:
-                print(f"  card frame {k} ({k / 29.97:5.2f}s): moved {dy:+4d}px, blur {L:3d}px")
+                print(f"  card frame {k} ({k / FPS:5.2f}s): moved {dy:+4d}px, blur {L:3d}px")
+            motion.append((k / FPS, dy / H, float(paper.mean() < 128)))      # (dark paper = a flash)
             changed += 1
         enc.stdin.write(np.ascontiguousarray(f).tobytes())
     enc.stdin.close()
     enc.wait()
     print(f"re-signed {changed} closing-card frames -> {OUT}")
 
-    # the name as a big picture too, so for_you.py can show it clearly when the card comes up
-    big = ImageFont.truetype(FONT, 300)
-    l, t, r, b = big.getbbox(args.name)
-    im = Image.new("L", (r - l + 40, b - t + 40), 0)
-    ImageDraw.Draw(im).text((20 - l, 20 - t), args.name, fill=255, font=big)
-    np.savez_compressed(os.path.join(HERE, "signature.npz"), alpha=np.asarray(im), name=np.array(args.name))
+    # the name as a big picture too, with the card's motion, so for_you.py can show it clearly
+    track = np.array(motion) if motion else np.zeros((1, 3))
+    start = track[0, 0]
+    track[:, 0] -= start                                        # seconds since the card came up
+    moving = np.flatnonzero(np.abs(track[:, 1]) > 0.002)
+    track = track[: moving.max() + 2 if len(moving) else 1]     # until it settles
+    np.savez_compressed(os.path.join(HERE, "signature.npz"), alpha=signature_picture(args.name),
+                        name=np.array(args.name), start=np.array(start), track=track)
     print("saved signature.npz for the gift")
 
 
